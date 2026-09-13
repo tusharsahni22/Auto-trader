@@ -1,0 +1,26 @@
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "4000:4000"
+    environment:
+      PORT: 4000
+      STARTING_EQUITY: ${STARTING_EQUITY:-10000}
+      DATA_DIR: /data
+      # Optional paid/free API keys for future data sources (see docs/06-data-and-features.md)
+      COINGECKO_API_KEY: ${COINGECKO_API_KEY:-}
+      CRYPTOCOMPARE_API_KEY: ${CRYPTOCOMPARE_API_KEY:-}
+    volumes:
+      - trader_data:/data
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "8080:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  trader_data:
