@@ -1,119 +1,143 @@
-import type { Candle } from "../types.js";
-import { adx, atr, bollingerBandwidth, hurstExponent, logReturns, percentileRank, realizedVolSeries } from "../lib/indicators.js";
 import type { ArchetypeCandidate, Claim } from "./types.js";
+import type { FeatureSnapshot } from "./snapshot.js";
 
 /**
- * docs/01 §4.1 + docs/05 — real agent output. This MVP has no LLM agent
- * mesh wired up (no provider, no prompts, no budget), so claims are
- * generated deterministically straight from the verified feature
- * snapshot instead of from a model call. Every claim still carries
- * featureIds + observedValues in the same shape a real agent's output
- * would, specifically so a future LLM-based agent can be dropped in
- * here without changing the evidence graph, ensemble, or calibration
- * code downstream — they only ever consume `Claim[]`.
+ * docs/01 §4.1 — the free, always-on "rules" agent. Deterministic claims
+ * computed straight from the verified feature snapshot rather than a model
+ * call — this is what runs even with every paid/free LLM agent disabled
+ * (docs/03 §5's PROVIDER_OUTAGE philosophy: the deterministic core works
+ * with zero AI). See agents/ for the LLM-backed providers that supplement
+ * this with real research when enabled.
  */
 
-export function generateClaims(candles: Candle[], candidate: ArchetypeCandidate): Claim[] {
-  const closes = candles.map((c) => c.close);
-  const claims: Claim[] = [];
+export function generateRuleClaims(snapshot: FeatureSnapshot, candidate: ArchetypeCandidate): Claim[] {
+  const v = snapshot.values;
   const dirSign = candidate.direction === "LONG" ? 1 : -1;
+  const claims: Claim[] = [];
 
-  const rvSeries = realizedVolSeries(closes, 30);
-  const rvRank = percentileRank(rvSeries);
   claims.push({
-    text: `Realized vol sits at the ${(rvRank * 100).toFixed(0)}th percentile of its trailing window`,
-    stance: rvRank < 0.3 ? "BULLISH" : rvRank > 0.7 ? "BEARISH" : "NEUTRAL",
-    strength: rvRank < 0.3 ? 0.5 : rvRank > 0.7 ? -0.3 : 0.1,
+    text: `Realized vol sits at the ${(v.rv_30d_rank * 100).toFixed(0)}th percentile of its trailing window`,
+    stance: v.rv_30d_rank < 0.3 ? "BULLISH" : v.rv_30d_rank > 0.7 ? "BEARISH" : "NEUTRAL",
+    strength: v.rv_30d_rank < 0.3 ? 0.5 : v.rv_30d_rank > 0.7 ? -0.3 : 0.1,
     featureIds: ["rv_30d_rank"],
-    observedValues: { rv_30d_rank: rvRank },
-    agent: "quant",
+    observedValues: { rv_30d_rank: v.rv_30d_rank },
+    agent: "rules:quant",
     cluster: "VOLATILITY",
     verified: true,
   });
 
-  const bw = bollingerBandwidth(closes, 20);
   claims.push({
-    text: `Bollinger bandwidth is ${(bw * 100).toFixed(2)}% of price`,
-    stance: bw < 0.03 ? "BULLISH" : "NEUTRAL",
-    strength: bw < 0.03 ? 0.4 * dirSign : 0,
+    text: `Bollinger bandwidth is ${(v.bollinger_bandwidth * 100).toFixed(2)}% of price`,
+    stance: v.bollinger_bandwidth < 0.03 ? "BULLISH" : "NEUTRAL",
+    strength: v.bollinger_bandwidth < 0.03 ? 0.4 * dirSign : 0,
     featureIds: ["bollinger_bandwidth"],
-    observedValues: { bollinger_bandwidth: bw },
-    agent: "technical",
+    observedValues: { bollinger_bandwidth: v.bollinger_bandwidth },
+    agent: "rules:technical",
     cluster: "PRICE_STRUCTURE",
     verified: true,
   });
 
-  const avgVol = candles.slice(-20, -1).reduce((a, c) => a + c.volume, 0) / 19;
-  const lastVol = candles[candles.length - 1].volume;
-  const volRatio = avgVol > 0 ? lastVol / avgVol : 1;
   claims.push({
-    text: `Latest bar volume is ${volRatio.toFixed(2)}x the trailing 19-bar average`,
-    stance: volRatio > 1.5 ? (candidate.direction === "LONG" ? "BULLISH" : "BEARISH") : "NEUTRAL",
-    strength: volRatio > 1.5 ? Math.min(0.7, (volRatio - 1) * 0.3) * dirSign : 0,
+    text: `Latest bar volume is ${v.volume_ratio_20.toFixed(2)}x the trailing 19-bar average`,
+    stance: v.volume_ratio_20 > 1.5 ? (candidate.direction === "LONG" ? "BULLISH" : "BEARISH") : "NEUTRAL",
+    strength: v.volume_ratio_20 > 1.5 ? Math.min(0.7, (v.volume_ratio_20 - 1) * 0.3) * dirSign : 0,
     featureIds: ["volume_ratio_20"],
-    observedValues: { volume_ratio_20: volRatio },
-    agent: "technical",
+    observedValues: { volume_ratio_20: v.volume_ratio_20 },
+    agent: "rules:technical",
     cluster: "FLOW",
     verified: true,
   });
 
-  const adx14 = adx(candles, 14);
   claims.push({
-    text: `ADX(14) reads ${adx14.toFixed(1)}`,
-    stance: adx14 > 22 ? (candidate.direction === "LONG" ? "BULLISH" : "BEARISH") : "NEUTRAL",
-    strength: adx14 > 22 ? Math.min(0.6, (adx14 - 22) / 40) * dirSign : 0,
+    text: `ADX(14) reads ${v.adx_14.toFixed(1)}`,
+    stance: v.adx_14 > 22 ? (candidate.direction === "LONG" ? "BULLISH" : "BEARISH") : "NEUTRAL",
+    strength: v.adx_14 > 22 ? Math.min(0.6, (v.adx_14 - 22) / 40) * dirSign : 0,
     featureIds: ["adx_14"],
-    observedValues: { adx_14: adx14 },
-    agent: "technical",
+    observedValues: { adx_14: v.adx_14 },
+    agent: "rules:technical",
     cluster: "PRICE_STRUCTURE",
     verified: true,
   });
 
-  const hurst = hurstExponent(closes);
   claims.push({
-    text: `Hurst exponent estimate is ${hurst.toFixed(2)}`,
-    stance: hurst > 0.55 ? (candidate.direction === "LONG" ? "BULLISH" : "BEARISH") : "NEUTRAL",
-    strength: hurst > 0.55 ? Math.min(0.5, (hurst - 0.55) * 2) * dirSign : 0,
+    text: `Hurst exponent estimate is ${v.hurst_200.toFixed(2)}`,
+    stance: v.hurst_200 > 0.55 ? (candidate.direction === "LONG" ? "BULLISH" : "BEARISH") : "NEUTRAL",
+    strength: v.hurst_200 > 0.55 ? Math.min(0.5, (v.hurst_200 - 0.55) * 2) * dirSign : 0,
     featureIds: ["hurst_200"],
-    observedValues: { hurst_200: hurst },
-    agent: "quant",
+    observedValues: { hurst_200: v.hurst_200 },
+    agent: "rules:quant",
     cluster: "VOLATILITY",
     verified: true,
   });
 
-  const a = atr(candles, 14);
-  const stopDistAtr = a > 0 ? Math.abs(candidate.entryPrice - candidate.stopPrice) / a : 0;
   claims.push({
-    text: `Structural stop sits ${stopDistAtr.toFixed(2)} ATR away from entry`,
+    text: `Structural stop sits ${v.stop_distance_atr.toFixed(2)} ATR away from entry`,
     stance: "NEUTRAL",
-    strength: stopDistAtr >= 1.2 && stopDistAtr <= 2.5 ? 0.2 * dirSign : -0.1 * dirSign,
+    strength: v.stop_distance_atr >= 1.2 && v.stop_distance_atr <= 2.5 ? 0.2 * dirSign : -0.1 * dirSign,
     featureIds: ["stop_distance_atr"],
-    observedValues: { stop_distance_atr: stopDistAtr },
-    agent: "risk",
+    observedValues: { stop_distance_atr: v.stop_distance_atr },
+    agent: "rules:risk",
     cluster: "PRICE_STRUCTURE",
     verified: true,
   });
 
-  const rets = logReturns(closes.slice(-96));
-  const drift = rets.reduce((s, r) => s + r, 0);
   claims.push({
-    text: `Net drift over the trailing 96 bars is ${(drift * 100).toFixed(2)}%`,
-    stance: drift * dirSign > 0 ? (candidate.direction === "LONG" ? "BULLISH" : "BEARISH") : "NEUTRAL",
-    strength: Math.max(-0.5, Math.min(0.5, drift * dirSign * 15)),
+    text: `Net drift over the trailing 96 bars is ${(v.drift_96 * 100).toFixed(2)}%`,
+    stance: v.drift_96 * dirSign > 0 ? (candidate.direction === "LONG" ? "BULLISH" : "BEARISH") : "NEUTRAL",
+    strength: Math.max(-0.5, Math.min(0.5, v.drift_96 * dirSign * 15)),
     featureIds: ["drift_96"],
-    observedValues: { drift_96: drift },
-    agent: "quant",
+    observedValues: { drift_96: v.drift_96 },
+    agent: "rules:quant",
     cluster: "FLOW",
     verified: true,
   });
+
+  if (Math.abs(v.news_sentiment_score) > 0.05) {
+    claims.push({
+      text: `Keyword-scored headline sentiment is ${v.news_sentiment_score > 0 ? "net bullish" : "net bearish"} (${v.news_sentiment_score.toFixed(2)})`,
+      stance: v.news_sentiment_score * dirSign > 0 ? (candidate.direction === "LONG" ? "BULLISH" : "BEARISH") : "NEUTRAL",
+      strength: Math.max(-0.5, Math.min(0.5, v.news_sentiment_score * dirSign)),
+      featureIds: ["news_sentiment_score"],
+      observedValues: { news_sentiment_score: v.news_sentiment_score },
+      agent: "rules:news",
+      cluster: "NEWS",
+      verified: true,
+    });
+  }
+
+  if (v.hours_to_next_tier1_event < 24) {
+    claims.push({
+      text: `A tier-1 macro event is ${v.hours_to_next_tier1_event.toFixed(1)}h away`,
+      stance: "NEUTRAL",
+      strength: 0,
+      featureIds: ["hours_to_next_tier1_event"],
+      observedValues: { hours_to_next_tier1_event: v.hours_to_next_tier1_event },
+      agent: "rules:event",
+      cluster: "EVENT",
+      verified: true,
+    });
+  }
 
   return claims;
 }
 
-/** docs/01 §4.2 — recomputes the observed value from the same window and compares. Always
- * passes here since claims are generated directly off the snapshot (no LLM to hallucinate a
- * number), but the check is real and stays in the pipeline so a future LLM agent's claims run
- * through the identical gate. */
-export function verifyClaim(claim: Claim, tolerance = 0.05): boolean {
-  return claim.featureIds.every((id) => id in claim.observedValues) && !Object.values(claim.observedValues).some((v) => Number.isNaN(v));
+/**
+ * docs/01 §4.2 — citation verification against the canonical snapshot, not
+ * just internal self-consistency. This is what makes the check meaningful
+ * once LLM-backed agents (agents/) are enabled: a model that invents a
+ * number, or cites a featureId that doesn't exist in the snapshot, gets
+ * its claim dropped here — logged to droppedClaims by evidence.ts.
+ */
+export function verifyClaim(claim: Claim, snapshot: FeatureSnapshot, tolerance = 0.05): { ok: true } | { ok: false; reason: "MISSING_FEATURE" | "CITATION_MISMATCH"; claimedValue?: number; actualValue?: number } {
+  for (const id of claim.featureIds) {
+    if (!(id in snapshot.values)) return { ok: false, reason: "MISSING_FEATURE" };
+    const claimed = claim.observedValues[id];
+    if (claimed === undefined || Number.isNaN(claimed)) return { ok: false, reason: "MISSING_FEATURE" };
+    const actual = snapshot.values[id];
+    const denom = Math.max(Math.abs(actual), 1e-6);
+    if (Math.abs(claimed - actual) / denom > tolerance) {
+      return { ok: false, reason: "CITATION_MISMATCH", claimedValue: claimed, actualValue: actual };
+    }
+  }
+  return { ok: true };
 }

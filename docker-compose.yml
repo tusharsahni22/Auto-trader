@@ -1,6 +1,7 @@
 services:
   backend:
     build: ./backend
+    image: tusharsahni22/auto-trader:tagname-backend
     ports:
       - "4000:4000"
     environment:
@@ -12,15 +13,25 @@ services:
       CRYPTOCOMPARE_API_KEY: ${CRYPTOCOMPARE_API_KEY:-}
     volumes:
       - trader_data:/data
+      - ./backend:/app
+      - backend_node_modules:/app/node_modules
     restart: unless-stopped
 
   frontend:
     build: ./frontend
+    image: tusharsahni22/auto-trader:tagname-frontend
     ports:
-      - "8080:80"
+      - "5173:5173"
     depends_on:
       - backend
+    environment:
+      VITE_API_PROXY: http://backend:4000
+    volumes:
+      - ./frontend:/app
+      - frontend_node_modules:/app/node_modules
     restart: unless-stopped
 
 volumes:
   trader_data:
+  backend_node_modules:
+  frontend_node_modules:

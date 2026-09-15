@@ -8,10 +8,13 @@ interface Props {
   markers?: { time: number; price: number; kind: "entry" | "exit" | "stop" | "target"; label: string }[];
 }
 
+const RECENT_BARS_VISIBLE = 96; // ~24h at 15m — enough to actually see live price movement, unlike fitContent's multi-day view
+
 export default function PriceChart({ candles, liveCandle }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
+  const wasEmptyRef = useRef(true);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -57,8 +60,19 @@ export default function PriceChart({ candles, liveCandle }: Props) {
       close: c.close,
     }));
     seriesRef.current.setData(data);
-    chartRef.current?.timeScale().fitContent();
+    // Only auto-scroll to the recent window on a fresh load (mount, or asset
+    // switch — both go through an empty `candles` first). Once the user has
+    // data on screen, periodic refetches shouldn't yank their zoom/pan back.
+    if (wasEmptyRef.current) {
+      const from = Math.max(0, data.length - RECENT_BARS_VISIBLE);
+      chartRef.current?.timeScale().setVisibleLogicalRange({ from, to: data.length - 1 + 2 });
+      wasEmptyRef.current = false;
+    }
   }, [candles]);
+
+  useEffect(() => {
+    if (candles.length === 0) wasEmptyRef.current = true;
+  }, [candles.length]);
 
   useEffect(() => {
     if (!seriesRef.current || !liveCandle) return;

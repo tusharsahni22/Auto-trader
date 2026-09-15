@@ -1,15 +1,20 @@
 import { CLUSTER_WEIGHTS, type Claim, type Cluster, type DroppedClaim, type EvidenceGraph } from "./types.js";
 import { verifyClaim } from "./claims.js";
+import type { FeatureSnapshot } from "./snapshot.js";
 
 const LAMBDA = 0.3; // docs/01 §4.3 — sibling claims in a cluster count at 30%.
 
-export function buildEvidenceGraph(claims: Claim[]): EvidenceGraph {
+export function buildEvidenceGraph(claims: Claim[], snapshot: FeatureSnapshot): EvidenceGraph {
   const admitted: Claim[] = [];
   const dropped: DroppedClaim[] = [];
 
   for (const c of claims) {
-    if (verifyClaim(c)) admitted.push(c);
-    else dropped.push({ claim: c, reason: "CITATION_MISMATCH" });
+    const result = verifyClaim(c, snapshot);
+    if (result.ok) {
+      admitted.push({ ...c, verified: true });
+    } else {
+      dropped.push({ claim: c, reason: result.reason, claimedValue: result.claimedValue, actualValue: result.actualValue });
+    }
   }
 
   const byCluster = new Map<Cluster, Claim[]>();

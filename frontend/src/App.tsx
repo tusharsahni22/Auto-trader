@@ -12,6 +12,7 @@ import TradeDetail from "./components/TradeDetail";
 import OpportunityFeed from "./components/OpportunityFeed";
 import RegimeBadge from "./components/RegimeBadge";
 import EngineHeartbeat from "./components/EngineHeartbeat";
+import LivePriceTicker from "./components/LivePriceTicker";
 
 const ASSETS: Asset[] = ["BTCUSDT", "ETHUSDT"];
 
@@ -28,6 +29,7 @@ export default function App() {
   const [regime, setRegime] = useState<RegimeSnapshot | null>(null);
   const [fundingRate, setFundingRate] = useState<number | null>(null);
   const [scans, setScans] = useState<Record<string, ScanInfo>>({});
+  const [lastPrice, setLastPrice] = useState<number | null>(null);
 
   useEffect(() => {
     api.status().then((s) => {
@@ -44,7 +46,11 @@ export default function App() {
   useEffect(() => {
     setCandles([]);
     setLiveCandle(null);
-    api.candles(asset).then(setCandles);
+    setLastPrice(null);
+    api.candles(asset).then((c) => {
+      setCandles(c);
+      if (c.length) setLastPrice(c[c.length - 1].close);
+    });
     api.regime(asset).then((r) => {
       setRegime(r.regime);
       setFundingRate(r.fundingRate);
@@ -56,6 +62,7 @@ export default function App() {
     if (event === "price") {
       const p = payload as { asset: Asset; price: number; time: number };
       if (p.asset === asset) {
+        setLastPrice(p.price);
         // lightweight candle nudge; full candle detail comes from periodic refetch
         setLiveCandle((prev) => {
           const base = prev ?? candles[candles.length - 1];
@@ -145,6 +152,7 @@ export default function App() {
             </div>
             <RegimeBadge regime={regime} fundingRate={fundingRate} />
           </div>
+          <LivePriceTicker price={lastPrice} asset={asset} />
           <EngineHeartbeat scan={scans[asset] ?? null} />
           <div className="h-[380px] rounded-lg border border-bg-border bg-bg-panel">
             <PriceChart candles={candles} liveCandle={liveCandle} />
