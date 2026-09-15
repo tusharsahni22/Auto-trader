@@ -1,7 +1,8 @@
 import type { Candle, Trade, TradeFill } from "../types.js";
 import { atr } from "../lib/indicators.js";
-import { generateClaims } from "../decision/claims.js";
+import { generateRuleClaims } from "../decision/claims.js";
 import { buildEvidenceGraph } from "../decision/evidence.js";
+import { buildFeatureSnapshot } from "../decision/snapshot.js";
 import { CLUSTER_WEIGHTS } from "../decision/types.js";
 
 /**
@@ -46,8 +47,9 @@ export function computeThesisDecay(trade: Trade, candles: Candle[]): number {
     structuralReason: "",
     atr: a,
   };
-  const claims = generateClaims(candles, pseudoCandidate);
-  const evidence = buildEvidenceGraph(claims);
+  const snapshot = buildFeatureSnapshot(candles, pseudoCandidate, "RANGE_BOUND");
+  const claims = generateRuleClaims(snapshot, pseudoCandidate);
+  const evidence = buildEvidenceGraph(claims, snapshot);
 
   let weightedNow = 0;
   let weightSum = 0;

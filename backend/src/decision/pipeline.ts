@@ -1,8 +1,9 @@
 import type { Candle } from "../types.js";
 import { classifyRegime } from "./regime.js";
 import { detectArchetypes } from "./archetypes.js";
-import { generateClaims } from "./claims.js";
+import { generateRuleClaims } from "./claims.js";
 import { buildEvidenceGraph } from "./evidence.js";
+import { buildFeatureSnapshot } from "./snapshot.js";
 import { aggregate } from "./ensemble.js";
 import { calibrate } from "./calibration.js";
 import { evaluateGates, type GateContext } from "./gates.js";
@@ -59,8 +60,9 @@ export function scoreCandidate(
   nowMs: number,
   options: ScoreOptions = {}
 ): PipelineOutput {
-  const claims = generateClaims(candles, candidate);
-  const evidence = buildEvidenceGraph(claims);
+  const snapshot = buildFeatureSnapshot(candles, candidate, regime.label);
+  const claims = generateRuleClaims(snapshot, candidate);
+  const evidence = buildEvidenceGraph(claims, snapshot);
   const ensemble = aggregate(candidate.archetype, regime.label, evidence);
   const calibration = calibrate(ensemble.rawScore, ensemble.priorWinRate, ensemble.priorN);
 
