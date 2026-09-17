@@ -6,34 +6,43 @@ export default {
     extend: {
       colors: {
         bg: {
-          DEFAULT: "#0b0e14",
-          panel: "#11151d",
-          raised: "#161b26",
-          border: "#232936",
+          DEFAULT: "#050607",
+          panel: "#0b0d10",
+          raised: "#13171c",
+          border: "#1e242c",
         },
         ink: {
-          DEFAULT: "#e6e9ef",
-          muted: "#8b93a7",
-          faint: "#5b6273",
+          DEFAULT: "#e8ecef",
+          muted: "#93a1ad",
+          faint: "#606c78",
         },
+        // Green is the primary accent — this is a trading surface, not a
+        // general-purpose app, so "action" and "long" share a colour.
         accent: {
-          DEFAULT: "#3d8bfd",
-          soft: "#1e2a44",
+          DEFAULT: "#16c784",
+          soft: "#0c2b22",
         },
         bull: {
-          DEFAULT: "#26a69a",
-          soft: "#0f2b28",
+          DEFAULT: "#16c784",
+          bright: "#2ce69b",
+          soft: "#0c2b22",
         },
         bear: {
-          DEFAULT: "#ef5350",
-          soft: "#3a1616",
+          DEFAULT: "#ea3943",
+          bright: "#ff5c66",
+          soft: "#2e1013",
         },
         warn: {
-          DEFAULT: "#eab308",
+          DEFAULT: "#f0b90b",
+          soft: "#2e2608",
         },
       },
       fontFamily: {
         mono: ["ui-monospace", "SFMono-Regular", "Menlo", "monospace"],
+      },
+      boxShadow: {
+        bull: "0 0 0 1px rgba(22,199,132,0.35), 0 0 18px -6px rgba(22,199,132,0.55)",
+        bear: "0 0 0 1px rgba(234,57,67,0.35), 0 0 18px -6px rgba(234,57,67,0.55)",
       },
     },
   },

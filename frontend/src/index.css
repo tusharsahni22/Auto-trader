@@ -7,7 +7,11 @@ html, body, #root {
 }
 
 body {
-  background: #0b0e14;
+  background:
+    radial-gradient(1200px 600px at 15% -10%, rgba(22, 199, 132, 0.07), transparent 60%),
+    radial-gradient(900px 500px at 100% 0%, rgba(234, 57, 67, 0.05), transparent 55%),
+    #050607;
+  color: #e8ecef;
 }
 
 ::-webkit-scrollbar {
@@ -15,9 +19,27 @@ body {
   height: 8px;
 }
 ::-webkit-scrollbar-thumb {
-  background: #232936;
+  background: #1e242c;
   border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #2a323c;
 }
 ::-webkit-scrollbar-track {
   background: transparent;
+}
+
+@layer components {
+  .panel {
+    @apply rounded-lg border border-bg-border bg-bg-panel;
+  }
+  .section-label {
+    @apply text-xs font-medium uppercase tracking-wider text-ink-faint;
+  }
+  .chip {
+    @apply rounded-md border border-bg-border bg-bg-raised px-2 py-1 text-xs text-ink-muted transition;
+  }
+  .chip-active {
+    @apply border-accent/50 bg-accent/15 text-accent;
+  }
 }

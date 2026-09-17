@@ -7,7 +7,7 @@ import { classifyRegime } from "../decision/regime.js";
 import { detectArchetypes } from "../decision/archetypes.js";
 import { atr } from "../lib/indicators.js";
 import type { ArchetypeCandidate } from "../decision/types.js";
-import { manageTrade } from "../lifecycle/manager.js";
+import { finalizeClose, manageTrade } from "../lifecycle/manager.js";
 import { onTradeClosed } from "../learning/recalibrate.js";
 import { evaluateCircuitBreakers, openRiskFromTrade, type OpenRisk } from "../risk/portfolio.js";
 
@@ -17,6 +17,62 @@ const MAX_CONCURRENT_POSITIONS = 3; // docs/03 §2.2
 const MAX_POSITIONS_PER_ASSET = 1;
 
 const STARTING_EQUITY = Number(process.env.STARTING_EQUITY ?? 10000);
+
+/**
+ * Live balance from Delta Exchange. Throws rather than falling back to a local
+ * number — a silent fallback would present the simulated starting equity as a
+ * real exchange balance, which is exactly the thing we must never do.
+ */
+let cachedDeltaBalance: number | null = null;
+let lastBalanceFetch = 0;
+const BALANCE_CACHE_MS = 30000;
+const SETTLEMENT_SYMBOLS = ["USDT", "USD", "USDC"];
+
+function deltaConfigured(): boolean {
+  return Boolean(process.env.DELTA_EXCHANGE_API_KEY && process.env.DELTA_EXCHANGE_API_SECRET);
+}
+
+async function fetchDeltaBalance(): Promise<number> {
+  if (!deltaConfigured()) {
+    throw new Error("Delta Exchange credentials not configured");
+  }
+
+  const now = Date.now();
+  if (cachedDeltaBalance !== null && now - lastBalanceFetch < BALANCE_CACHE_MS) {
+    return cachedDeltaBalance;
+  }
+
+  const { getDeltaBalance } = await import("../services/deltaExchange.js");
+  const balances = await getDeltaBalance();
+
+  if (!Array.isArray(balances)) {
+    throw new Error("Unexpected balance payload from Delta Exchange");
+  }
+
+  // Settlement currency varies by Delta region: USDT on the global exchange,
+  // USD on the India books. Take the first funded one in preference order.
+  const symbolOf = (b: any) => b.asset_symbol ?? b.asset?.symbol;
+  const wallets = SETTLEMENT_SYMBOLS.map((symbol) =>
+    balances.find((b: any) => symbolOf(b) === symbol)
+  ).filter(Boolean);
+
+  if (wallets.length === 0) {
+    const found = balances.map(symbolOf).filter(Boolean).join(", ") || "none";
+    throw new Error(
+      `No settlement wallet (${SETTLEMENT_SYMBOLS.join("/")}) on the Delta account — found: ${found}`
+    );
+  }
+
+  const funded = wallets.find((w: any) => Number(w.available_balance ?? w.balance) > 0) ?? wallets[0];
+  const available = Number(funded.available_balance ?? funded.balance);
+  if (!Number.isFinite(available)) {
+    throw new Error(`Delta Exchange returned a non-numeric ${symbolOf(funded)} balance`);
+  }
+
+  cachedDeltaBalance = available;
+  lastBalanceFetch = now;
+  return available;
+}
 
 let state: EngineState = {
   running: false,
@@ -197,6 +253,24 @@ function openTrade(asset: Asset, trade: Trade) {
   upsertTrade(trade);
   state.openPositions = openTrades.size;
   broadcast("trade_opened", trade);
+
+  // Placing the exchange order is async, but every caller of openTrade is
+  // synchronous, so the local trade is recorded first and the fill is attached
+  // when it lands. The trade's execution field says which state it is in.
+  void (async () => {
+    const { mirrorOpenToDelta } = await import("../services/execution.js");
+    await mirrorOpenToDelta(trade, (updatedTrade) => {
+      upsertTrade(updatedTrade);
+      broadcast("trade_updated", updatedTrade);
+    });
+    upsertTrade(trade);
+    broadcast("trade_updated", trade);
+    if (trade.execution?.status === "FILLED") {
+      console.log(`[engine] Delta order ${trade.execution.orderId} filled — ${trade.execution.contracts} contracts ${trade.direction} ${trade.asset}`);
+    } else if (trade.execution?.error) {
+      console.warn(`[engine] Delta order for ${trade.asset} ${trade.execution.status}: ${trade.execution.error}`);
+    }
+  })();
 }
 
 function tryOpenPosition(asset: Asset) {
@@ -273,6 +347,175 @@ export function forceOpenTrade(asset: Asset, direction: Direction = "LONG"): { o
   return { ok: true, trade };
 }
 
+/**
+ * Opens a trade from user-supplied levels. Unlike forceOpenTrade this takes the
+ * entry, stop and targets from the trader rather than synthesising them, and it
+ * skips scoring entirely — there is no model opinion to record for a discretionary
+ * trade, so the probability fields stay at their uninformative defaults.
+ */
+export function openManualTrade(params: {
+  asset: Asset;
+  direction: Direction;
+  entryPrice: number;
+  stopPrice: number;
+  targets?: number[];
+  quantity: number;
+  setupType?: string;
+  notes?: string;
+}): { ok: true; trade: Trade } | { ok: false; error: string } {
+  const { asset, direction, entryPrice, stopPrice, quantity } = params;
+
+  const perAssetOpen = [...openTrades.values()].filter((t) => t.asset === asset).length;
+  if (perAssetOpen >= MAX_POSITIONS_PER_ASSET) {
+    return { ok: false, error: `An open position already exists for ${asset}` };
+  }
+  if (openTrades.size >= MAX_CONCURRENT_POSITIONS) {
+    return { ok: false, error: `Max concurrent positions (${MAX_CONCURRENT_POSITIONS}) reached` };
+  }
+
+  const dirSign = direction === "LONG" ? 1 : -1;
+  const stopDist = (entryPrice - stopPrice) * dirSign;
+  if (stopDist <= 0) {
+    return {
+      ok: false,
+      error: direction === "LONG"
+        ? "Stop loss must be below entry price for a LONG"
+        : "Stop loss must be above entry price for a SHORT",
+    };
+  }
+
+  const targetPrices = params.targets?.length ? params.targets : [entryPrice + dirSign * stopDist * 2];
+  const fraction = 1 / targetPrices.length;
+
+  const trade: Trade = {
+    id: randomUUID(),
+    asset,
+    direction,
+    archetype: "COMPRESSION_BREAKOUT",
+    regime: classifyRegime(asset, getCandles(asset, INTERVAL), Date.now()).label,
+    entryPrice,
+    entryTime: Date.now(),
+    exitPrice: null,
+    exitTime: null,
+    initialQuantity: quantity,
+    remainingQuantity: quantity,
+    initialStopPrice: stopPrice,
+    stopPrice,
+    targets: targetPrices.map((price) => ({
+      price,
+      fraction,
+      r: Math.abs(price - entryPrice) / stopDist,
+      hit: false,
+      hitTime: null,
+    })),
+    fills: [],
+    status: "OPEN",
+    realizedPnlUsd: 0,
+    pnlUsd: null,
+    pnlPct: null,
+    rMultiple: null,
+    reason: `Manual entry (${params.setupType ?? "MANUAL"})${params.notes ? ` — ${params.notes}` : ""}`,
+    exitReason: null,
+    rawScore: 0.5,
+    calibratedWinProb: 0.5,
+    calibratedWinProbCI90: [0.3, 0.7],
+    calibrationStage: "A_UNCALIBRATED",
+    evNetR: 0,
+    evNetUsd: 0,
+    costBreakdown: { feesR: 0, slippageR: 0, fundingR: 0, totalR: 0 },
+    evidenceClusters: [],
+    nEffectiveSignals: 0,
+    conflict: 0,
+    kellyFraction: 0,
+    appliedFraction: 0,
+    bindingConstraint: "MANUAL",
+    haircuts: [],
+    entryClusterStrengths: {},
+    thesisDecay: 1,
+    breakevenMoved: false,
+    maxFavorableExcursionR: 0,
+    maxAdverseExcursionR: 0,
+    maxHoldHours: 48,
+  };
+
+  openTrade(asset, trade);
+  return { ok: true, trade };
+}
+
+/** Open positions enriched with mark price and unrealised P&L. */
+export function getOpenPositions() {
+  return [...openTrades.values()].map((t) => {
+    const mark = getLastPrice(t.asset) ?? t.entryPrice;
+    const dirSign = t.direction === "LONG" ? 1 : -1;
+    const unrealized = (mark - t.entryPrice) * dirSign * t.remainingQuantity;
+    const notional = t.entryPrice * t.remainingQuantity;
+
+    return {
+      id: t.id,
+      symbol: t.asset,
+      side: t.direction,
+      size: t.remainingQuantity,
+      entry: t.entryPrice,
+      mark,
+      unrealized,
+      pnlPct: notional > 0 ? (unrealized / notional) * 100 : 0,
+      sl: t.stopPrice,
+      tps: t.targets.filter((x) => !x.hit).map((x) => x.price),
+      entryTime: t.entryTime,
+      reason: t.reason,
+      execution: t.execution ?? { venue: "SIMULATED", status: "SIMULATED" },
+      rMultiple:
+        Math.abs(t.entryPrice - t.initialStopPrice) > 0
+          ? ((mark - t.entryPrice) * dirSign) / Math.abs(t.entryPrice - t.initialStopPrice)
+          : 0,
+    };
+  });
+}
+
+/** Closes an open position at the current mark price. */
+export function closeTradeManually(tradeId: string): { ok: true; trade: Trade } | { ok: false; error: string } {
+  const trade = openTrades.get(tradeId);
+  if (!trade) return { ok: false, error: "No open trade with that id" };
+
+  const price = getLastPrice(trade.asset);
+  if (price === null) return { ok: false, error: "No live price available to close against" };
+
+  finalizeClose(trade, price, "MANUAL_CLOSE", Date.now());
+  openTrades.delete(trade.id);
+  state.openPositions = openTrades.size;
+  upsertTrade(trade);
+  persistTradeClose(trade);
+  return { ok: true, trade };
+}
+
+/**
+ * Moves the stop on an open position. Rejects a stop on the wrong side of the
+ * current price, which would otherwise close the trade the moment it is checked.
+ */
+export function updateTradeStop(
+  tradeId: string,
+  stopPrice: number
+): { ok: true; trade: Trade } | { ok: false; error: string } {
+  const trade = openTrades.get(tradeId);
+  if (!trade) return { ok: false, error: "No open trade with that id" };
+  if (!Number.isFinite(stopPrice) || stopPrice <= 0) {
+    return { ok: false, error: "Stop price must be a positive number" };
+  }
+
+  const price = getLastPrice(trade.asset) ?? trade.entryPrice;
+  if (trade.direction === "LONG" && stopPrice >= price) {
+    return { ok: false, error: `Stop must be below the current price (${price})` };
+  }
+  if (trade.direction === "SHORT" && stopPrice <= price) {
+    return { ok: false, error: `Stop must be above the current price (${price})` };
+  }
+
+  trade.stopPrice = stopPrice;
+  upsertTrade(trade);
+  broadcast("trade_updated", trade);
+  return { ok: true, trade };
+}
+
 function manageOpenTrades(asset: Asset) {
   const candles = getCandles(asset, INTERVAL);
   if (candles.length === 0) return;
@@ -290,6 +533,16 @@ function manageOpenTrades(asset: Asset) {
 }
 
 function persistTradeClose(trade: Trade) {
+  void (async () => {
+    const { mirrorCloseToDelta } = await import("../services/execution.js");
+    await mirrorCloseToDelta(trade, (updatedTrade) => {
+      upsertTrade(updatedTrade);
+      broadcast("trade_updated", updatedTrade);
+    });
+    upsertTrade(trade);
+    broadcast("trade_updated", trade);
+  })();
+
   state.equity += trade.realizedPnlUsd;
   persistEquity(trade.realizedPnlUsd);
   onTradeClosed(trade);
@@ -303,6 +556,30 @@ export async function initEngine() {
   if (initialized) return;
   initialized = true;
   loadOpenTradesFromDb();
+
+  if (deltaConfigured()) {
+    try {
+      const deltaBalance = await fetchDeltaBalance();
+      console.log(`[engine] Equity from Delta Exchange: ${deltaBalance}`);
+      state.equity = deltaBalance;
+      state.startingEquity = deltaBalance;
+      // Rebase the drawdown references too. Carrying over a peak from the
+      // simulated equity would read as a near-total drawdown against a smaller
+      // real balance and trip the circuit breakers on startup.
+      equityPeak = deltaBalance;
+      dayStartEquity = deltaBalance;
+      setKv("equityPeak", String(equityPeak));
+      setKv("dayStartEquity", String(dayStartEquity));
+      persistEquity(0);
+    } catch (error: any) {
+      console.warn(
+        `[engine] Delta Exchange balance unavailable (${error?.message ?? error}) — using simulated equity $${state.equity}`
+      );
+    }
+  } else {
+    console.log(`[engine] Delta Exchange not configured — using simulated equity $${state.equity}`);
+  }
+
   await startMarketData(ASSETS, [INTERVAL]);
   onPrice((asset) => {
     manageOpenTrades(asset);
@@ -337,6 +614,34 @@ export function getInterval(): string {
 
 export function getRecentOpportunities() {
   return recentOpportunities;
+}
+
+/**
+ * Current account balance and where it came from, so the UI can distinguish a
+ * live Delta Exchange balance from the local simulated one.
+ */
+export async function getBalanceInfo(): Promise<{
+  equity: number;
+  source: "delta_exchange" | "simulated";
+  deltaConfigured: boolean;
+  error?: string;
+}> {
+  if (!deltaConfigured()) {
+    return { equity: state.equity, source: "simulated", deltaConfigured: false };
+  }
+
+  try {
+    const balance = await fetchDeltaBalance();
+    state.equity = balance;
+    return { equity: balance, source: "delta_exchange", deltaConfigured: true };
+  } catch (error: any) {
+    return {
+      equity: state.equity,
+      source: "simulated",
+      deltaConfigured: true,
+      error: error?.message ?? String(error),
+    };
+  }
 }
 
 export { getEquityCurve };

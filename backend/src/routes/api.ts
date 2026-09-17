@@ -1,12 +1,32 @@
 import { Router } from "express";
 import { getCandles, getFundingRate } from "../marketData.js";
-import { forceOpenTrade, getAssets, getEngineState, getEquityCurve, getInterval, getLastScans, getRecentOpportunities, startEngine, stopEngine } from "../engine/index.js";
+import { closeTradeManually, forceOpenTrade, getAssets, getBalanceInfo, getEngineState, getEquityCurve, getInterval, getLastScans, getOpenPositions, getRecentOpportunities, startEngine, stopEngine, updateTradeStop } from "../engine/index.js";
 import { getTrades } from "../db.js";
 import { classifyRegime } from "../decision/regime.js";
 import { getAllCellStats, getPlattParams } from "../learning/stats.js";
+import { newsCalendarRouter } from "./newsCalendar.js";
+import { agentsRouter } from "./agents.js";
+import { manualTradeRouter } from "./manualTrade.js";
+import { botRouter } from "./bot.js";
+import { marketRouter } from "./market.js";
 import type { Asset, Direction } from "../types.js";
 
 export const api = Router();
+
+// Mount news calendar routes
+api.use("/news-calendar", newsCalendarRouter);
+
+// Mount agent management routes
+api.use("/agents", agentsRouter);
+
+// Mount manual trade entry routes
+api.use("/manual-trade", manualTradeRouter);
+
+// Mount signal-bot control routes
+api.use("/bot", botRouter);
+
+// Mount market data routes
+api.use("/market", marketRouter);
 
 api.get("/status", (_req, res) => {
   res.json({ engine: getEngineState(), assets: getAssets(), interval: getInterval(), scans: getLastScans() });
@@ -53,8 +73,62 @@ api.get("/trades", (req, res) => {
   res.json(trades);
 });
 
+api.get("/positions", (_req, res) => {
+  const positions = getOpenPositions();
+  res.json({
+    positions,
+    totalUnrealized: positions.reduce((sum, p) => sum + p.unrealized, 0),
+  });
+});
+
+api.post("/positions/:id/close", (req, res) => {
+  const result = closeTradeManually(req.params.id);
+  if (!result.ok) {
+    res.status(409).json(result);
+    return;
+  }
+  res.json({ ok: true, trade: result.trade });
+});
+
+api.put("/positions/:id/stop", (req, res) => {
+  const stopPrice = Number(req.body?.stopPrice);
+  const result = updateTradeStop(req.params.id, stopPrice);
+  if (!result.ok) {
+    res.status(400).json(result);
+    return;
+  }
+  res.json({ ok: true, trade: result.trade });
+});
+
+api.get("/trades/stats", (_req, res) => {
+  const trades = getTrades();
+  const closed = trades.filter((t) => t.status === "CLOSED");
+  const wins = closed.filter((t) => (t.pnlUsd ?? 0) > 0);
+  const losses = closed.filter((t) => (t.pnlUsd ?? 0) < 0);
+  const grossWin = wins.reduce((sum, t) => sum + (t.pnlUsd ?? 0), 0);
+  const grossLoss = Math.abs(losses.reduce((sum, t) => sum + (t.pnlUsd ?? 0), 0));
+
+  res.json({
+    total: trades.length,
+    open: trades.filter((t) => t.status === "OPEN").length,
+    closed: closed.length,
+    wins: wins.length,
+    losses: losses.length,
+    winRate: closed.length ? wins.length / closed.length : 0,
+    netPnlUsd: closed.reduce((sum, t) => sum + (t.pnlUsd ?? 0), 0),
+    avgRMultiple: closed.length
+      ? closed.reduce((sum, t) => sum + (t.rMultiple ?? 0), 0) / closed.length
+      : 0,
+    profitFactor: grossLoss > 0 ? grossWin / grossLoss : null,
+  });
+});
+
 api.get("/equity-curve", (_req, res) => {
   res.json(getEquityCurve());
+});
+
+api.get("/balance", async (_req, res) => {
+  res.json(await getBalanceInfo());
 });
 
 api.get("/opportunities", (_req, res) => {

@@ -187,3 +187,31 @@ export function rollingMax(values: number[], period: number): number {
 export function rollingMin(values: number[], period: number): number {
   return Math.min(...values.slice(-period));
 }
+
+/**
+ * Wilder's RSI. Uses smoothed (not simple) averages after the first period,
+ * which is what charting platforms display.
+ */
+export function rsi(closes: number[], period = 14): number | null {
+  if (closes.length < period + 1) return null;
+
+  let gains = 0;
+  let losses = 0;
+  for (let i = 1; i <= period; i++) {
+    const change = closes[i] - closes[i - 1];
+    if (change >= 0) gains += change;
+    else losses -= change;
+  }
+  let avgGain = gains / period;
+  let avgLoss = losses / period;
+
+  for (let i = period + 1; i < closes.length; i++) {
+    const change = closes[i] - closes[i - 1];
+    avgGain = (avgGain * (period - 1) + Math.max(change, 0)) / period;
+    avgLoss = (avgLoss * (period - 1) + Math.max(-change, 0)) / period;
+  }
+
+  if (avgLoss === 0) return 100;
+  const rs = avgGain / avgLoss;
+  return 100 - 100 / (1 + rs);
+}

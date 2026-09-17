@@ -1,4 +1,31 @@
 services:
+  # ===========================================
+  # MongoDB (Optional - Local Development Only)
+  # ===========================================
+  # Comment out this entire service if using MongoDB Atlas (recommended)
+  # Uncomment if you want to use local MongoDB instead of Atlas
+
+  # mongodb:
+  #   image: mongo:7.0
+  #   ports:
+  #     - "27017:27017"
+  #   environment:
+  #     MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER:-admin}
+  #     MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:-changeme}
+  #     MONGO_INITDB_DATABASE: autotrader
+  #   volumes:
+  #     - mongo_data:/data/db
+  #     - mongo_config:/data/configdb
+  #   restart: unless-stopped
+  #   healthcheck:
+  #     test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 5
+
+  # ===========================================
+  # Backend Service
+  # ===========================================
   backend:
     build: ./backend
     image: tusharsahni22/auto-trader:tagname-backend
@@ -7,14 +34,44 @@ services:
     environment:
       PORT: 4000
       STARTING_EQUITY: ${STARTING_EQUITY:-10000}
-      DATA_DIR: /data
+      # Points at the bind-mounted repo folder (backend/data) rather than the
+      # trader_data volume, so the container and a local "npm run dev" share one
+      # trade store instead of silently diverging.
+      DATA_DIR: /app/data
+      # MongoDB connection - Use Atlas URL from .env file
+      # Set MONGODB_URI in .env to your MongoDB Atlas connection string
+      MONGODB_URI: ${MONGODB_URI}
       # Optional paid/free API keys for future data sources (see docs/06-data-and-features.md)
       COINGECKO_API_KEY: ${COINGECKO_API_KEY:-}
       CRYPTOCOMPARE_API_KEY: ${CRYPTOCOMPARE_API_KEY:-}
+      # Economic calendar API (using FCS API as free option)
+      ECONOMIC_CALENDAR_API_KEY: ${ECONOMIC_CALENDAR_API_KEY:-}
+      # Delta Exchange API for paper trading
+      DELTA_EXCHANGE_API_KEY: ${DELTA_EXCHANGE_API_KEY:-}
+      DELTA_EXCHANGE_API_SECRET: ${DELTA_EXCHANGE_API_SECRET:-}
+      DELTA_EXCHANGE_BASE_URL: ${DELTA_EXCHANGE_BASE_URL:-}
+      # Send real orders to the exchange (see .env.example)
+      LIVE_TRADING: ${LIVE_TRADING:-false}
+      # Market news / economic calendar
+      NEWS_ENABLED: ${NEWS_ENABLED:-true}
+      NEWS_BLACKOUT_MIN: ${NEWS_BLACKOUT_MIN:-15}
+      NEWS_CURRENCIES: ${NEWS_CURRENCIES:-USD,EUR,GBP,JPY,CNY}
+      NEWS_REFRESH_SEC: ${NEWS_REFRESH_SEC:-180}
+      # Metered API (free FCS tier = 500 calls/month) — keep this slow
+      NEWS_CALENDAR_REFRESH_SEC: ${NEWS_CALENDAR_REFRESH_SEC:-21600}
+      # LLM Provider API keys
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      # Agent configuration
+      AGENTS_ENABLED: ${AGENTS_ENABLED:-false}
     volumes:
       - trader_data:/data
       - ./backend:/app
       - backend_node_modules:/app/node_modules
+    # Remove/comment depends_on when using MongoDB Atlas
+    # depends_on:
+    #   mongodb:
+    #     condition: service_healthy
     restart: unless-stopped
 
   frontend:
@@ -25,7 +82,9 @@ services:
     depends_on:
       - backend
     environment:
-      VITE_API_PROXY: http://backend:4000
+      # Override to http://host.docker.internal:4000 when the backend runs on the
+      # host (npm run dev) instead of as a compose service.
+      VITE_API_PROXY: ${VITE_API_PROXY:-http://backend:4000}
     volumes:
       - ./frontend:/app
       - frontend_node_modules:/app/node_modules
@@ -33,5 +92,8 @@ services:
 
 volumes:
   trader_data:
+  # Only needed for local MongoDB (commented out when using Atlas)
+  # mongo_data:
+  # mongo_config:
   backend_node_modules:
   frontend_node_modules:

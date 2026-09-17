@@ -72,6 +72,16 @@ export function onPrice(fn: PriceListener) {
 }
 
 let ws: WebSocket | null = null;
+let lastMessageAt = 0;
+
+/**
+ * A dropped network path often leaves the socket half-open: no data arrives but
+ * no 'close' ever fires, so the reconnect handler never runs and the feed dies
+ * silently. Watch the message clock instead and force a reconnect when it goes
+ * quiet.
+ */
+const STALL_TIMEOUT_MS = 90_000;
+const STALL_CHECK_MS = 30_000;
 
 export async function startMarketData(assets: Asset[], intervals: string[]) {
   for (const asset of assets) {
@@ -91,7 +101,10 @@ export async function startMarketData(assets: Asset[], intervals: string[]) {
 
   const connect = () => {
     ws = new WebSocket(`${BINANCE_WS}?streams=${streams}`);
-    ws.on("open", () => console.log("[marketData] connected to Binance WS"));
+    ws.on("open", () => {
+      lastMessageAt = Date.now();
+      console.log("[marketData] connected to Binance WS");
+    });
     ws.on("message", (raw) => {
       try {
         const msg = JSON.parse(raw.toString());
@@ -107,6 +120,7 @@ export async function startMarketData(assets: Asset[], intervals: string[]) {
           close: Number(k.c),
           volume: Number(k.v),
         };
+        lastMessageAt = Date.now();
         upsertLiveCandle(asset, interval, candle);
         if (interval === intervals[0]) {
           for (const l of listeners) l(asset, candle.close, candle);
@@ -123,4 +137,29 @@ export async function startMarketData(assets: Asset[], intervals: string[]) {
   };
 
   connect();
+
+  setInterval(() => {
+    if (lastMessageAt === 0) return;
+    const silentFor = Date.now() - lastMessageAt;
+    if (silentFor < STALL_TIMEOUT_MS) return;
+
+    console.warn(
+      `[marketData] no WS data for ${Math.round(silentFor / 1000)}s — forcing reconnect`
+    );
+    lastMessageAt = Date.now(); // avoid a terminate storm while it reconnects
+    try {
+      ws?.terminate();
+    } catch {
+      /* the close handler schedules the reconnect */
+    }
+
+    // Refill whatever the outage skipped so the chart has no hole.
+    for (const asset of assets) {
+      for (const interval of intervals) {
+        bootstrap(asset, interval).catch((e) =>
+          console.warn(`[marketData] re-bootstrap failed for ${asset}`, (e as Error).message)
+        );
+      }
+    }
+  }, STALL_CHECK_MS);
 }

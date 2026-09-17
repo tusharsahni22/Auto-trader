@@ -6,3 +6,11 @@ backend/data/
 *.db-wal
 *.db-shm
 .env
+
+# Local/editor/build artifacts
+*.log
+*.tsbuildinfo
+*.ipynb
+*.timestamp-*.mjs
+.claude/*
+!.claude/settings.json

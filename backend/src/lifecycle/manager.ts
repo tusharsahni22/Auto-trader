@@ -73,7 +73,7 @@ function applyFill(trade: Trade, price: number, fraction: number, reason: string
   return pnl;
 }
 
-function finalizeClose(trade: Trade, price: number, reason: string, time: number) {
+export function finalizeClose(trade: Trade, price: number, reason: string, time: number) {
   if (trade.remainingQuantity > 1e-9) {
     applyFill(trade, price, trade.remainingQuantity / trade.initialQuantity, reason, time);
   }

@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "auto-trader": {
+      "command": "npx",
+      "args": [
+        "tsx",
+        "C:\\Users\\tusha\\Desktop\\Auto-trader\\backend\\src\\mcp\\server.ts"
+      ],
+      "env": {
+        "AUTO_TRADER_API": "http://localhost:4000"
+      }
+    }
+  }
+}

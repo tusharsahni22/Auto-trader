@@ -1,0 +1,585 @@
+/**
+ * News and Economic Calendar Service
+ *
+ * Events live in an in-memory store so the calendar works without a database.
+ * MongoDB, when connected, is a best-effort persistence layer on top of it —
+ * a Mongo outage must never make the calendar hang or disappear.
+ */
+
+export type EventPriority = 'LOW' | 'MEDIUM' | 'HIGH';
+export type EventCategory = 'ECONOMIC' | 'CRYPTO' | 'REGULATORY' | 'TECHNICAL' | 'GENERAL';
+
+export interface CalendarEvent {
+  eventId: string;
+  title: string;
+  description?: string;
+  category: EventCategory;
+  priority: EventPriority;
+  impactScore: number;
+  eventTime: string;
+  publishedAt: string;
+  source: string;
+  sourceUrl?: string;
+  assets: string[];
+  regions: string[];
+  economicData?: {
+    indicator: string;
+    actual?: number;
+    forecast?: number;
+    previous?: number;
+  };
+  isActive: boolean;
+}
+
+/** Raw record shape from FCS `forex/economy_cal`. */
+interface EconomicCalendarEvent {
+  id: string;
+  title: string;
+  indicator: string;
+  country: string;
+  currency: string;
+  /** "1" low · "2" medium · "3" high · "0" holiday/no impact */
+  importance: string;
+  date: string;
+  actual?: string;
+  forecast?: string;
+  previous?: string;
+  unit?: string;
+}
+
+interface NewsItem {
+  id: string;
+  title: string;
+  body: string;
+  url?: string;
+  source: string;
+  publishedAt: Date;
+}
+
+const eventStore = new Map<string, CalendarEvent>();
+const RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+const MAX_EVENTS = 2000;
+let lastUpdate = 0;
+
+/** Feature config — all optional, with sensible defaults. */
+export const newsConfig = {
+  enabled: process.env.NEWS_ENABLED !== "false",
+  /** Don't open NEW trades within N minutes of a High-impact event (0 disables). */
+  blackoutMinutes: Number(process.env.NEWS_BLACKOUT_MIN ?? 15),
+  /** Currencies whose events matter; empty means all. */
+  currencies: String(process.env.NEWS_CURRENCIES ?? "USD,EUR,GBP,JPY,CNY")
+    .split(",")
+    .map((c) => c.trim().toUpperCase())
+    .filter(Boolean),
+  refreshSec: Number(process.env.NEWS_REFRESH_SEC ?? 180),
+  /**
+   * The economic calendar is a weekly schedule behind a metered API (the free
+   * FCS tier allows 500 calls a month), so it is refreshed on its own far
+   * slower clock. Polling it at the headline rate burns the monthly quota in
+   * about a day.
+   */
+  calendarRefreshSec: Number(process.env.NEWS_CALENDAR_REFRESH_SEC ?? 6 * 60 * 60),
+};
+
+let lastCalendarFetch = 0;
+let calendarError: string | null = null;
+
+function putEvent(event: CalendarEvent) {
+  eventStore.set(event.eventId, event);
+}
+
+/**
+ * Bounds the store by age rather than by count. A plain size cap would evict
+ * news first — headlines carry past timestamps while the economic feed is
+ * mostly future-dated — which is how the feed ends up showing no news at all.
+ */
+function pruneStaleEvents() {
+  const cutoff = Date.now() - RETENTION_MS;
+  for (const [id, event] of eventStore) {
+    if (new Date(event.eventTime).getTime() < cutoff) eventStore.delete(id);
+  }
+
+  if (eventStore.size > MAX_EVENTS) {
+    const surplus = [...eventStore.values()]
+      .sort((a, b) => new Date(a.eventTime).getTime() - new Date(b.eventTime).getTime())
+      .slice(0, eventStore.size - MAX_EVENTS);
+    for (const event of surplus) eventStore.delete(event.eventId);
+  }
+}
+
+/** Mirrors an event into MongoDB when available. Never throws. */
+async function persistEvent(event: CalendarEvent): Promise<void> {
+  try {
+    const { isMongoConnected } = await import('../db/mongodb.js');
+    if (!isMongoConnected()) return;
+    const { NewsEvent } = await import('../db/models/index.js');
+    await NewsEvent.findOneAndUpdate(
+      { eventId: event.eventId },
+      { ...event, eventTime: new Date(event.eventTime), publishedAt: new Date(event.publishedAt) },
+      { upsert: true }
+    );
+  } catch {
+    // Persistence is optional — the in-memory store is the source of truth.
+  }
+}
+
+/**
+ * Fetch economic calendar events from FCS API (free tier).
+ */
+async function fetchEconomicCalendar(): Promise<EconomicCalendarEvent[]> {
+  const API_KEY = process.env.ECONOMIC_CALENDAR_API_KEY;
+
+  if (!API_KEY) {
+    console.warn('[newsCalendar] ECONOMIC_CALENDAR_API_KEY not set — economic events unavailable');
+    return [];
+  }
+
+  try {
+    const response = await fetch(
+      `https://fcsapi.com/api-v3/forex/economy_cal?access_key=${API_KEY}&from=${getToday()}&to=${getFutureDate(7)}`
+    );
+    if (!response.ok) throw new Error(`API returned ${response.status}`);
+    const data = (await response.json()) as { status?: boolean; msg?: string; response?: EconomicCalendarEvent[] };
+    if (!data.status) throw new Error(data.msg || 'Economic calendar API rejected the request');
+    calendarError = null;
+    return data.response || [];
+  } catch (error: any) {
+    calendarError = error?.message ?? String(error);
+    console.error('[newsCalendar] Failed to fetch economic calendar:', calendarError);
+    return [];
+  }
+}
+
+const RSS_FEEDS = [
+  { url: 'https://www.coindesk.com/arc/outboundfeeds/rss/', name: 'CoinDesk' },
+  { url: 'https://cointelegraph.com/rss', name: 'Cointelegraph' },
+  { url: 'https://news.bitcoin.com/feed/', name: 'Bitcoin.com' },
+];
+
+function decodeXmlText(raw: string): string {
+  return raw
+    .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#0?39;|&apos;/g, "'")
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function firstTag(block: string, name: string): string {
+  const match = block.match(new RegExp(`<${name}(?:\\s[^>]*)?>([\\s\\S]*?)</${name}>`, 'i'));
+  return match ? decodeXmlText(match[1]) : '';
+}
+
+function parseRss(xml: string, sourceName: string): NewsItem[] {
+  const blocks = xml.match(/<item[\s\S]*?<\/item>/gi) ?? [];
+
+  return blocks.flatMap((block) => {
+    const title = firstTag(block, 'title');
+    if (!title) return [];
+
+    const link = firstTag(block, 'link');
+    const pubDate = firstTag(block, 'pubDate') || firstTag(block, 'dc:date');
+    const published = pubDate ? new Date(pubDate) : new Date();
+
+    return [{
+      id: firstTag(block, 'guid') || link || `${sourceName}_${title}`,
+      title,
+      body: firstTag(block, 'description'),
+      url: link || undefined,
+      source: sourceName,
+      publishedAt: Number.isNaN(published.getTime()) ? new Date() : published,
+    }];
+  });
+}
+
+/**
+ * Crypto headlines. RSS is the primary source because it needs no credentials —
+ * CryptoCompare's public news endpoint now returns 401 without an API key.
+ */
+async function fetchCryptoNews(): Promise<NewsItem[]> {
+  const items: NewsItem[] = [];
+
+  const feeds = await Promise.allSettled(
+    RSS_FEEDS.map(async (feed) => {
+      const response = await fetch(feed.url, { headers: { 'User-Agent': 'auto-trader' } });
+      if (!response.ok) throw new Error(`${feed.name} returned ${response.status}`);
+      return parseRss(await response.text(), feed.name);
+    })
+  );
+
+  for (const [i, result] of feeds.entries()) {
+    if (result.status === 'fulfilled') {
+      items.push(...result.value);
+    } else {
+      console.error(`[newsCalendar] ${RSS_FEEDS[i].name} feed failed:`, result.reason);
+    }
+  }
+
+  const API_KEY = process.env.CRYPTOCOMPARE_API_KEY;
+  if (API_KEY) {
+    try {
+      const response = await fetch(
+        `https://min-api.cryptocompare.com/data/v2/news/?lang=EN&api_key=${API_KEY}`
+      );
+      if (!response.ok) throw new Error(`API returned ${response.status}`);
+      const data = (await response.json()) as { Data?: unknown };
+      if (Array.isArray(data.Data)) {
+        items.push(...data.Data.map((item: any) => ({
+          id: `cc_${item.id}`,
+          title: item.title,
+          body: String(item.body ?? ''),
+          url: item.url,
+          source: item.source_info?.name || 'CryptoCompare',
+          publishedAt: new Date(item.published_on * 1000),
+        })));
+      }
+    } catch (error) {
+      console.error('[newsCalendar] CryptoCompare fetch failed:', error);
+    }
+  }
+
+  return items;
+}
+
+function storeEconomicEvents(events: EconomicCalendarEvent[]): number {
+  let stored = 0;
+  for (const event of events) {
+    // FCS timestamps are UTC but carry no zone marker.
+    const eventTime = new Date(`${event.date.replace(' ', 'T')}Z`);
+    if (Number.isNaN(eventTime.getTime())) continue;
+
+    const priority = mapImportanceToPriority(event.importance);
+    const label = event.title || event.indicator;
+
+    const calendarEvent: CalendarEvent = {
+      eventId: `eco_${event.id}`,
+      title: `${event.country} — ${label}`,
+      description: [event.indicator, event.unit].filter(Boolean).join(' · ') || label,
+      category: 'ECONOMIC',
+      priority,
+      impactScore: priority === 'HIGH' ? 80 : priority === 'MEDIUM' ? 50 : 20,
+      eventTime: eventTime.toISOString(),
+      publishedAt: new Date().toISOString(),
+      source: `Economic Calendar (${event.currency})`,
+      // Macro releases move crypto, so they stay visible under both asset filters.
+      assets: ['BTC', 'ETH'],
+      regions: [event.country],
+      economicData: {
+        indicator: event.indicator,
+        actual: numberOrUndefined(event.actual),
+        forecast: numberOrUndefined(event.forecast),
+        previous: numberOrUndefined(event.previous),
+      },
+      isActive: true,
+    };
+
+    putEvent(calendarEvent);
+    void persistEvent(calendarEvent);
+    stored++;
+  }
+  return stored;
+}
+
+function storeCryptoNews(newsItems: NewsItem[]): number {
+  let stored = 0;
+  for (const item of newsItems) {
+    if (Number.isNaN(item.publishedAt.getTime())) continue;
+
+    const priority = classifyNewsPriority(`${item.title} ${item.body}`);
+    const publishedAt = item.publishedAt.toISOString();
+
+    const calendarEvent: CalendarEvent = {
+      eventId: `news_${item.id}`.replace(/[^a-zA-Z0-9_:./-]/g, '_').slice(0, 200),
+      title: item.title,
+      description: item.body.substring(0, 500),
+      category: 'CRYPTO',
+      priority,
+      impactScore: priority === 'HIGH' ? 70 : priority === 'MEDIUM' ? 40 : 15,
+      eventTime: publishedAt,
+      publishedAt,
+      source: item.source,
+      sourceUrl: item.url,
+      assets: extractAssets(`${item.title} ${item.body}`),
+      regions: ['GLOBAL'],
+      isActive: true,
+    };
+
+    putEvent(calendarEvent);
+    void persistEvent(calendarEvent);
+    stored++;
+  }
+  return stored;
+}
+
+function numberOrUndefined(raw?: string): number | undefined {
+  if (!raw) return undefined;
+  const parsed = parseFloat(String(raw).replace(/[%,]/g, ''));
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function mapImportanceToPriority(importance: string): EventPriority {
+  switch (String(importance)) {
+    case '3': return 'HIGH';
+    case '2': return 'MEDIUM';
+    default: return 'LOW';
+  }
+}
+
+function classifyNewsPriority(text: string): EventPriority {
+  const highKeywords = ['crash', 'hack', 'sec ', 'regulation', 'ban', 'etf', 'institutional', 'fed', 'rate'];
+  const mediumKeywords = ['upgrade', 'partnership', 'launch', 'listing', 'update'];
+
+  const lowerText = text.toLowerCase();
+  if (highKeywords.some((kw) => lowerText.includes(kw))) return 'HIGH';
+  if (mediumKeywords.some((kw) => lowerText.includes(kw))) return 'MEDIUM';
+  return 'LOW';
+}
+
+function extractAssets(text: string): string[] {
+  const assets = new Set<string>();
+  const lowerText = text.toLowerCase();
+
+  const assetKeywords: Record<string, string[]> = {
+    BTC: ['bitcoin', 'btc'],
+    ETH: ['ethereum', 'eth', 'ether'],
+    SOL: ['solana', 'sol'],
+    BNB: ['binance', 'bnb'],
+  };
+
+  for (const [asset, keywords] of Object.entries(assetKeywords)) {
+    if (keywords.some((kw) => lowerText.includes(kw))) assets.add(asset);
+  }
+
+  return Array.from(assets);
+}
+
+function getToday(): string {
+  return new Date().toISOString().split('T')[0];
+}
+
+function getFutureDate(days: number): string {
+  const date = new Date();
+  date.setDate(date.getDate() + days);
+  return date.toISOString().split('T')[0];
+}
+
+/** Free RSS headlines — no quota, safe to poll often. */
+export async function updateHeadlines(): Promise<number> {
+  const stored = storeCryptoNews(await fetchCryptoNews());
+  pruneStaleEvents();
+  lastUpdate = Date.now();
+  return stored;
+}
+
+/**
+ * Metered economic calendar. `force` bypasses the cadence guard for an explicit
+ * manual refresh, but the guard is what keeps scheduled polling inside quota.
+ */
+export async function updateEconomicCalendar(force = false): Promise<number> {
+  const dueAt = lastCalendarFetch + newsConfig.calendarRefreshSec * 1000;
+  if (!force && lastCalendarFetch > 0 && Date.now() < dueAt) return 0;
+
+  lastCalendarFetch = Date.now();
+  const stored = storeEconomicEvents(await fetchEconomicCalendar());
+  pruneStaleEvents();
+  return stored;
+}
+
+export async function updateNewsCalendar(): Promise<{ economic: number; crypto: number; total: number }> {
+  console.log('[newsCalendar] Fetching updates...');
+
+  const [economicStored, cryptoStored] = await Promise.all([
+    updateEconomicCalendar(true),
+    updateHeadlines(),
+  ]);
+
+  console.log(`[newsCalendar] Stored ${economicStored} economic events, ${cryptoStored} crypto news`);
+
+  return { economic: economicStored, crypto: cryptoStored, total: eventStore.size };
+}
+
+interface QueryOptions {
+  priority?: EventPriority[];
+  category?: EventCategory[];
+  assets?: string[];
+  limit?: number;
+}
+
+function applyFilters(events: CalendarEvent[], options: QueryOptions): CalendarEvent[] {
+  let result = events.filter((e) => e.isActive);
+
+  if (options.priority?.length) {
+    result = result.filter((e) => options.priority!.includes(e.priority));
+  }
+  if (options.category?.length) {
+    result = result.filter((e) => options.category!.includes(e.category));
+  }
+  if (options.assets?.length) {
+    // An event with no asset tags is market-wide, so it survives an asset filter.
+    result = result.filter(
+      (e) => e.assets.length === 0 || e.assets.some((a) => options.assets!.includes(a))
+    );
+  }
+
+  return result;
+}
+
+/**
+ * Events in the calendar window. The window reaches backwards as well as
+ * forwards: published news always carries a past timestamp, so a
+ * strictly-future filter would hide every news item in the feed.
+ */
+export async function getUpcomingEvents(
+  options: QueryOptions & { hoursAhead?: number; hoursBack?: number } = {}
+): Promise<CalendarEvent[]> {
+  if (eventStore.size === 0) {
+    await updateNewsCalendar();
+  }
+
+  const now = Date.now();
+  const from = now - (options.hoursBack ?? 12) * 60 * 60 * 1000;
+  const to = now + (options.hoursAhead ?? 72) * 60 * 60 * 1000;
+
+  const inWindow = [...eventStore.values()].filter((e) => {
+    const t = new Date(e.eventTime).getTime();
+    return t >= from && t <= to;
+  });
+
+  return applyFilters(inWindow, options)
+    .sort((a, b) => new Date(b.eventTime).getTime() - new Date(a.eventTime).getTime())
+    .slice(0, options.limit ?? 50);
+}
+
+export async function getRecentNews(
+  options: QueryOptions & { hoursBack?: number } = {}
+): Promise<CalendarEvent[]> {
+  if (eventStore.size === 0) {
+    await updateNewsCalendar();
+  }
+
+  const from = Date.now() - (options.hoursBack ?? 24) * 60 * 60 * 1000;
+
+  const recent = [...eventStore.values()].filter(
+    (e) => new Date(e.publishedAt).getTime() >= from
+  );
+
+  return applyFilters(recent, options)
+    .sort((a, b) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime())
+    .slice(0, options.limit ?? 50);
+}
+
+export function getEventById(eventId: string): CalendarEvent | undefined {
+  return eventStore.get(eventId);
+}
+
+export function dismissEvent(eventId: string): CalendarEvent | undefined {
+  const event = eventStore.get(eventId);
+  if (!event) return undefined;
+  event.isActive = false;
+  void persistEvent(event);
+  return event;
+}
+
+export function getCalendarStats() {
+  const now = Date.now();
+  const next24h = now + 24 * 60 * 60 * 1000;
+  const next7d = now + 7 * 24 * 60 * 60 * 1000;
+  const events = [...eventStore.values()];
+  const time = (e: CalendarEvent) => new Date(e.eventTime).getTime();
+
+  return {
+    totalActive: events.filter((e) => e.isActive).length,
+    highPriorityNext24h: events.filter(
+      (e) => e.isActive && e.priority === 'HIGH' && time(e) >= now && time(e) <= next24h
+    ).length,
+    economicNext7d: events.filter(
+      (e) => e.isActive && e.category === 'ECONOMIC' && time(e) >= now && time(e) <= next7d
+    ).length,
+    recentCryptoNews: events.filter(
+      (e) => e.category === 'CRYPTO' && new Date(e.publishedAt).getTime() >= now - 24 * 60 * 60 * 1000
+    ).length,
+    economicCalendarConfigured: Boolean(process.env.ECONOMIC_CALENDAR_API_KEY),
+    economicCalendarError: calendarError,
+    economicCalendarNextRefresh: lastCalendarFetch
+      ? new Date(lastCalendarFetch + newsConfig.calendarRefreshSec * 1000).toISOString()
+      : null,
+    lastUpdate: lastUpdate ? new Date(lastUpdate).toISOString() : null,
+  };
+}
+
+/** Warms the store at boot and refreshes it every 5 minutes. */
+export function startNewsCalendarUpdates(): void {
+  if (!newsConfig.enabled) {
+    console.log("[newsCalendar] disabled via NEWS_ENABLED=false");
+    return;
+  }
+
+  void updateNewsCalendar().catch((e) =>
+    console.error('[newsCalendar] initial update failed:', e)
+  );
+
+  setInterval(() => {
+    void updateHeadlines().catch((e) =>
+      console.error('[newsCalendar] headline refresh failed:', e)
+    );
+  }, Math.max(60, newsConfig.refreshSec) * 1000);
+
+  setInterval(() => {
+    void updateEconomicCalendar().catch((e) =>
+      console.error('[newsCalendar] calendar refresh failed:', e)
+    );
+  }, Math.max(600, newsConfig.calendarRefreshSec) * 1000);
+}
+
+
+/** True when an economic event's currency is one we care about. */
+function isRelevantCurrency(event: CalendarEvent): boolean {
+  if (newsConfig.currencies.length === 0) return true;
+  const match = event.source.match(/(([A-Z]{3}))/);
+  return match ? newsConfig.currencies.includes(match[1]) : true;
+}
+
+export interface BlackoutStatus {
+  active: boolean;
+  minutes: number;
+  event?: { title: string; eventTime: string; minutesAway: number };
+}
+
+/**
+ * High-impact releases move price violently and unpredictably, so entering just
+ * before one is closer to a coin flip than to a signal. This reports whether we
+ * are inside that window; it gates new entries only — open positions are left
+ * alone so their stops and targets still manage them.
+ */
+export function getNewsBlackout(now = Date.now()): BlackoutStatus {
+  const minutes = newsConfig.blackoutMinutes;
+  if (!newsConfig.enabled || minutes <= 0) return { active: false, minutes };
+
+  const windowMs = minutes * 60 * 1000;
+
+  for (const event of eventStore.values()) {
+    if (!event.isActive || event.category !== "ECONOMIC" || event.priority !== "HIGH") continue;
+    if (!isRelevantCurrency(event)) continue;
+
+    const eventTime = new Date(event.eventTime).getTime();
+    const delta = eventTime - now;
+    if (delta >= -windowMs && delta <= windowMs) {
+      return {
+        active: true,
+        minutes,
+        event: {
+          title: event.title,
+          eventTime: event.eventTime,
+          minutesAway: Math.round(delta / 60000),
+        },
+      };
+    }
+  }
+
+  return { active: false, minutes };
+}

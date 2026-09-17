@@ -1,9 +1,21 @@
+import "./env.js";
 import express from "express";
 import cors from "cors";
 import http from "node:http";
 import { WebSocketServer, WebSocket } from "ws";
 import { api } from "./routes/api.js";
 import { initEngine, setBroadcaster } from "./engine/index.js";
+import { startNewsCalendarUpdates } from "./services/newsCalendar.js";
+import { setBotBroadcaster } from "./bot/scheduler.js";
+
+// MongoDB is optional - system works without it
+let connectMongoDB: (() => Promise<void>) | null = null;
+try {
+  const mongoModule = await import("./db/mongodb.js");
+  connectMongoDB = mongoModule.connectMongoDB;
+} catch (e) {
+  console.log("[server] MongoDB module not available - running without database persistence");
+}
 
 const PORT = Number(process.env.PORT ?? 4000);
 
@@ -28,9 +40,22 @@ wss.on("connection", (ws) => {
 });
 
 setBroadcaster(broadcast);
+setBotBroadcaster(broadcast);
 
 server.listen(PORT, async () => {
   console.log(`[server] listening on :${PORT}`);
+
+  // Connect to MongoDB (optional)
+  if (connectMongoDB) {
+    try {
+      await connectMongoDB();
+    } catch (error) {
+      console.error("[server] MongoDB connection failed, continuing without persistence:", error);
+    }
+  }
+
+  startNewsCalendarUpdates();
+
   await initEngine();
   console.log("[server] engine initialized (stopped — call /api/engine/start)");
 });

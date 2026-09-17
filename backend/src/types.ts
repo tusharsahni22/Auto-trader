@@ -77,6 +77,39 @@ export interface Trade {
   maxFavorableExcursionR: number;
   maxAdverseExcursionR: number;
   maxHoldHours: number;
+
+  /** How and whether this trade reached a real exchange. */
+  execution?: TradeExecution;
+}
+
+export type ExecutionStatus =
+  | "SIMULATED"
+  | "PENDING"
+  | "FILLED"
+  | "REJECTED"
+  | "FAILED"
+  | "CLOSED"
+  | "CLOSE_FAILED";
+
+export interface TradeExecution {
+  venue: "SIMULATED" | "DELTA";
+  status: ExecutionStatus;
+  orderId?: string;
+  closeOrderId?: string;
+  contracts?: number;
+  avgFillPrice?: number;
+  /** Price the local feed expected, before reconciling to the exchange fill. */
+  requestedPrice?: number;
+  /** avgFillPrice - requestedPrice; the whole setup was shifted by this. */
+  priceShift?: number;
+  placedAt?: number;
+  closedAt?: number;
+  error?: string;
+  /** Number of automatic exchange retry attempts already made. */
+  retryCount?: number;
+  retryAt?: number;
+  /** Current mark-to-stop exposure in USD, calculated before a retry. */
+  currentRiskUsd?: number;
 }
 
 export interface VetoedOpportunity {

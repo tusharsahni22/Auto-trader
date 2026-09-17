@@ -1,4 +1,5 @@
 import type { EngineState, Trade } from "../lib/types";
+import type { BalanceInfo } from "../lib/api";
 
 function fmtUsd(n: number) {
   return n.toLocaleString(undefined, { style: "currency", currency: "USD", maximumFractionDigits: 2 });
@@ -7,20 +8,23 @@ function fmtUsd(n: number) {
 interface Props {
   engine: EngineState | null;
   trades: Trade[];
+  balance?: BalanceInfo | null;
 }
 
-export default function StatCards({ engine, trades }: Props) {
+export default function StatCards({ engine, trades, balance }: Props) {
   const closed = trades.filter((t) => t.status === "CLOSED");
   const wins = closed.filter((t) => (t.pnlUsd ?? 0) > 0);
   const winRate = closed.length ? (wins.length / closed.length) * 100 : 0;
   const netPnl = closed.reduce((sum, t) => sum + (t.pnlUsd ?? 0), 0);
-  const equity = engine?.equity ?? 0;
+  // A live exchange balance is more current than the engine snapshot, which is
+  // only refetched on mount.
+  const equity = balance?.source === "delta_exchange" ? balance.equity : engine?.equity ?? 0;
   const startEquity = engine?.startingEquity ?? 0;
   const equityChangePct = startEquity ? ((equity - startEquity) / startEquity) * 100 : 0;
 
   const cards = [
     {
-      label: "Equity",
+      label: balance?.source === "delta_exchange" ? "Equity (Delta live)" : "Equity",
       value: fmtUsd(equity),
       sub: `${equityChangePct >= 0 ? "+" : ""}${equityChangePct.toFixed(2)}%`,
       tone: equityChangePct >= 0 ? "bull" : "bear",
@@ -61,6 +65,15 @@ export default function StatCards({ engine, trades }: Props) {
           </div>
         </div>
       ))}
+      {balance && (
+        <div className="col-span-2 text-xs text-ink-faint md:col-span-4">
+          {balance.source === "delta_exchange"
+            ? "Equity is the live Delta Exchange wallet balance."
+            : balance.deltaConfigured
+              ? `Simulated equity — Delta Exchange balance unavailable: ${balance.error}`
+              : "Simulated equity — Delta Exchange is not configured."}
+        </div>
+      )}
     </div>
   );
 }
