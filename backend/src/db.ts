@@ -1,6 +1,7 @@
 import path from "node:path";
 import fs from "node:fs";
 import type { Trade, PnlPoint } from "./types.js";
+import { getMongoConnection, isMongoConnected } from "./db/mongodb.js";
 
 /**
  * Plain-JSON persistence. Trade volume for a 2-asset swing engine is small
@@ -31,12 +32,92 @@ function load(): StoreShape {
 
 const store: StoreShape = load();
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
+let mongoReady = false;
+const STATE_ID = "main";
+const LEASE_ID = "engine-leader";
+const INSTANCE_ID = process.env.ENGINE_INSTANCE_ID ?? "local";
+const LEADER_ID = process.env.ENGINE_LEADER_ID ?? "domain";
+
+function stateCollection() {
+  return getMongoConnection().collection<StoreShape & { _id: string }>("autoTraderState");
+}
+
+/** Load the canonical ledger before the engine starts. MongoDB wins over the file. */
+export async function initializeLedger() {
+  if (!isMongoConnected()) {
+    console.warn("[ledger] MongoDB unavailable; using local JSON fallback");
+    return;
+  }
+
+  const collection = stateCollection();
+  const existing = await collection.findOne({ _id: STATE_ID });
+  if (existing) {
+    store.trades = existing.trades ?? {};
+    store.equityCurve = existing.equityCurve ?? {};
+    store.kv = existing.kv ?? {};
+    mongoReady = true;
+    console.log(`[ledger] loaded canonical MongoDB state (${Object.keys(store.trades).length} trades)`);
+    return;
+  }
+
+  const migrateFile = process.env.LEDGER_MIGRATE_LOCAL_FILE === "true";
+  const initial: StoreShape = migrateFile
+    ? { trades: store.trades, equityCurve: store.equityCurve, kv: store.kv }
+    : { trades: {}, equityCurve: {}, kv: {} };
+  await collection.updateOne({ _id: STATE_ID }, { $setOnInsert: initial }, { upsert: true });
+  const saved = await collection.findOne({ _id: STATE_ID });
+  store.trades = saved?.trades ?? {};
+  store.equityCurve = saved?.equityCurve ?? {};
+  store.kv = saved?.kv ?? {};
+  mongoReady = true;
+  console.log(`[ledger] initialized canonical MongoDB state${migrateFile ? " from local JSON" : ""}`);
+}
+
+/** Refresh read-only API views so a second instance sees the leader's latest trades. */
+export async function refreshLedger() {
+  if (!mongoReady || !isMongoConnected()) return;
+  const current = await stateCollection().findOne({ _id: STATE_ID });
+  if (!current) return;
+  store.trades = current.trades ?? {};
+  store.equityCurve = current.equityCurve ?? {};
+  store.kv = current.kv ?? {};
+}
+
+/** Only the configured leader may run the strategy against the shared account. */
+export async function acquireEngineLease(): Promise<{ ok: boolean; owner?: string }> {
+  if (!mongoReady || !isMongoConnected()) return { ok: INSTANCE_ID === LEADER_ID, owner: INSTANCE_ID };
+  if (INSTANCE_ID !== LEADER_ID) return { ok: false, owner: LEADER_ID };
+  const now = new Date();
+  const expiresAt = new Date(now.getTime() + 60_000);
+  const result = await stateCollection().findOneAndUpdate(
+    { _id: LEASE_ID, $or: [{ "kv.leaseExpiresAt": { $lt: now.toISOString() } }, { "kv.leaseOwner": INSTANCE_ID }, { "kv.leaseOwner": { $exists: false } }] },
+    { $set: { "kv.leaseOwner": INSTANCE_ID, "kv.leaseExpiresAt": expiresAt.toISOString() } },
+    { upsert: true, returnDocument: "after" }
+  );
+  return { ok: result?.kv?.leaseOwner === INSTANCE_ID, owner: result?.kv?.leaseOwner };
+}
+
+export async function releaseEngineLease() {
+  if (mongoReady && isMongoConnected() && INSTANCE_ID === LEADER_ID) {
+    await stateCollection().updateOne({ _id: LEASE_ID, "kv.leaseOwner": INSTANCE_ID }, { $set: { "kv.leaseExpiresAt": new Date(0).toISOString() } });
+  }
+}
+
+async function persistMongo() {
+  if (!mongoReady || !isMongoConnected()) return;
+  await stateCollection().updateOne(
+    { _id: STATE_ID },
+    { $set: { trades: store.trades, equityCurve: store.equityCurve, kv: store.kv } },
+    { upsert: true }
+  );
+}
 
 function scheduleSave() {
   if (saveTimer) return;
   saveTimer = setTimeout(() => {
     saveTimer = null;
     fs.writeFileSync(FILE, JSON.stringify(store));
+    void persistMongo().catch((error) => console.error("[ledger] MongoDB save failed:", error));
   }, 250);
 }
 

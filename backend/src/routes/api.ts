@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { getCandles, getFundingRate } from "../marketData.js";
 import { closeTradeManually, forceOpenTrade, getAssets, getBalanceInfo, getEngineState, getEquityCurve, getInterval, getLastScans, getOpenPositions, getRecentOpportunities, startEngine, stopEngine, updateTradeStop } from "../engine/index.js";
-import { getTrades } from "../db.js";
+import { getTrades, refreshLedger } from "../db.js";
 import { classifyRegime } from "../decision/regime.js";
 import { getAllCellStats, getPlattParams } from "../learning/stats.js";
 import { newsCalendarRouter } from "./newsCalendar.js";
@@ -10,6 +10,7 @@ import { manualTradeRouter } from "./manualTrade.js";
 import { botRouter } from "./bot.js";
 import { marketRouter } from "./market.js";
 import type { Asset, Direction } from "../types.js";
+import { acquireEngineLease } from "../db.js";
 
 export const api = Router();
 
@@ -32,7 +33,12 @@ api.get("/status", (_req, res) => {
   res.json({ engine: getEngineState(), assets: getAssets(), interval: getInterval(), scans: getLastScans() });
 });
 
-api.post("/engine/start", (_req, res) => {
+api.post("/engine/start", async (_req, res) => {
+  const lease = await acquireEngineLease();
+  if (!lease.ok) {
+    res.status(409).json({ ok: false, error: `Engine is controlled by the leader instance (${lease.owner ?? "unknown"})` });
+    return;
+  }
   startEngine();
   res.json({ ok: true, engine: getEngineState() });
 });
@@ -62,7 +68,8 @@ api.get("/candles/:asset", (req, res) => {
   res.json(getCandles(asset, getInterval()));
 });
 
-api.get("/trades", (req, res) => {
+api.get("/trades", async (req, res) => {
+  await refreshLedger();
   let trades = getTrades();
   const { asset, status, direction, from, to } = req.query;
   if (asset) trades = trades.filter((t) => t.asset === asset);
@@ -100,7 +107,8 @@ api.put("/positions/:id/stop", (req, res) => {
   res.json({ ok: true, trade: result.trade });
 });
 
-api.get("/trades/stats", (_req, res) => {
+api.get("/trades/stats", async (_req, res) => {
+  await refreshLedger();
   const trades = getTrades();
   const closed = trades.filter((t) => t.status === "CLOSED");
   const wins = closed.filter((t) => (t.pnlUsd ?? 0) > 0);
@@ -123,7 +131,8 @@ api.get("/trades/stats", (_req, res) => {
   });
 });
 
-api.get("/equity-curve", (_req, res) => {
+api.get("/equity-curve", async (_req, res) => {
+  await refreshLedger();
   res.json(getEquityCurve());
 });
 

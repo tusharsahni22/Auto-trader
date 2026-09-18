@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Asset, Direction, EngineState, Trade, VetoedOpportunity } from "../types.js";
 import { getCandles, getLastPrice, onPrice, startMarketData } from "../marketData.js";
-import { addEquityPoint, getEquityCurve, getKv, getTrades, setKv, upsertTrade } from "../db.js";
+import { addEquityPoint, getEquityCurve, getKv, getTrades, releaseEngineLease, setKv, upsertTrade } from "../db.js";
 import { runPipeline, scoreCandidate, type PipelineOutput } from "../decision/pipeline.js";
 import { classifyRegime } from "../decision/regime.js";
 import { detectArchetypes } from "../decision/archetypes.js";
@@ -94,6 +94,16 @@ type Broadcaster = (event: string, payload: unknown) => void;
 let broadcast: Broadcaster = () => {};
 export function setBroadcaster(fn: Broadcaster) {
   broadcast = fn;
+}
+
+/** Called after MongoDB ledger hydration, because this module is imported before startup connects. */
+export function reloadPersistedState() {
+  state.equity = Number(getKv("equity") ?? STARTING_EQUITY);
+  equityPeak = Number(getKv("equityPeak") ?? state.equity);
+  dayStartEquity = Number(getKv("dayStartEquity") ?? state.equity);
+  dayStartDate = getKv("dayStartDate") ?? new Date().toISOString().slice(0, 10);
+  openTrades.clear();
+  loadOpenTradesFromDb();
 }
 
 function loadOpenTradesFromDb() {
@@ -597,6 +607,7 @@ export function startEngine() {
 export function stopEngine() {
   state.running = false;
   state.startedAt = null;
+  void releaseEngineLease().catch((error) => console.error("[engine] lease release failed:", error));
   broadcast("engine_state", state);
 }
 

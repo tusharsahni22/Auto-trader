@@ -4,7 +4,8 @@ import cors from "cors";
 import http from "node:http";
 import { WebSocketServer, WebSocket } from "ws";
 import { api } from "./routes/api.js";
-import { initEngine, setBroadcaster } from "./engine/index.js";
+import { initEngine, reloadPersistedState, setBroadcaster } from "./engine/index.js";
+import { initializeLedger } from "./db.js";
 import { startNewsCalendarUpdates } from "./services/newsCalendar.js";
 import { setBotBroadcaster } from "./bot/scheduler.js";
 
@@ -49,6 +50,8 @@ server.listen(PORT, async () => {
   if (connectMongoDB) {
     try {
       await connectMongoDB();
+      await initializeLedger();
+      reloadPersistedState();
     } catch (error) {
       console.error("[server] MongoDB connection failed, continuing without persistence:", error);
     }
