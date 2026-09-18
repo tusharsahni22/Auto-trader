@@ -60,13 +60,14 @@ async function deltaRequest(
   const response = await fetch(BASE_URL + path, options);
 
   if (!response.ok) {
-    const payload = (await response.json().catch(() => null)) as { error?: unknown } | null;
+    const payload = (await response.json().catch(() => null)) as { error?: unknown; message?: unknown } | null;
     // Delta nests the reason as { error: { code: "invalid_api_key" } }.
     const reason =
       (payload?.error as any)?.code ??
       (typeof payload?.error === 'string' ? payload.error : null) ??
+      (typeof payload?.message === 'string' ? payload.message : null) ??
       response.statusText;
-    throw new Error(`Delta Exchange API error (${response.status}): ${reason}`);
+    throw new Error(`Delta Exchange API error (${response.status}) ${method} ${path}: ${reason}`);
   }
 
   return response.json();
@@ -86,12 +87,16 @@ export async function getDeltaBalance(): Promise<any> {
 }
 
 /**
- * Get open positions
+ * Get margined/open positions.
+ *
+ * Delta's current REST API exposes the collection at /v2/positions/margined;
+ * /v2/positions is not a valid collection route and returns bad_schema.
  */
 export async function getDeltaPositions(): Promise<any[]> {
   try {
-    const result = await deltaRequest('GET', '/v2/positions');
-    return result.result || [];
+    const result = await deltaRequest('GET', '/v2/positions/margined');
+    const positions = result.result;
+    return Array.isArray(positions) ? positions : positions ? [positions] : [];
   } catch (error: any) {
     console.error('[deltaExchange] Failed to get positions:', error);
     throw error;
