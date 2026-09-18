@@ -9,7 +9,7 @@ import { calibrate } from "./calibration.js";
 import { evaluateGates, type GateContext } from "./gates.js";
 import { computeExpectedValue } from "../ev/index.js";
 import { computeSizing } from "../ev/sizing.js";
-import { getFundingRate } from "../marketData.js";
+import { getFundingRate, getMarketFeedHealth } from "../marketData.js";
 import { getPlattFittedAt } from "../learning/stats.js";
 import type { OpenRisk } from "../risk/portfolio.js";
 import type { ArchetypeCandidate, EvidenceGraph, RegimeSnapshot } from "./types.js";
@@ -21,7 +21,6 @@ import type { ArchetypeCandidate, EvidenceGraph, RegimeSnapshot } from "./types.
  * its own file with the specific simplifications noted there.
  */
 
-const DATA_CONFIDENCE = 0.92; // static — no per-feed staleness/gap tracking in this MVP (docs/06 §5)
 const MIN_RISK_PER_TRADE = 0.001; // mirrors ev/sizing.ts's floor
 
 export interface PipelineOutput {
@@ -66,7 +65,10 @@ export function scoreCandidate(
   const ensemble = aggregate(candidate.archetype, regime.label, evidence);
   const calibration = calibrate(ensemble.rawScore, ensemble.priorWinRate, ensemble.priorN);
 
+  const feed = getMarketFeedHealth(asset as "BTCUSDT" | "ETHUSDT");
   const fundingRate = getFundingRate(asset as "BTCUSDT" | "ETHUSDT");
+  const liveExecution = process.env.LIVE_TRADING === "true";
+  const dataConfidence = !feed.fresh ? 0 : feed.source === "delta" ? 0.98 : 0.65;
   const nominalRiskUsd = equity * 0.005;
   const { ev, distribution, modelDisagreement } = computeExpectedValue(candidate, calibration.calibratedWinProb, fundingRate, nominalRiskUsd);
 
@@ -79,7 +81,7 @@ export function scoreCandidate(
     evidence,
     calibration,
     ev,
-    dataConfidence: DATA_CONFIDENCE,
+    dataConfidence,
     calibrationVintageDays,
     existingOpenRisk,
     equity,
@@ -109,6 +111,22 @@ export function scoreCandidate(
     entryClusterStrengths,
   };
 
+  if (liveExecution && feed.source !== "delta") {
+    return { ...base, decision: "VETO", vetoReasons: ["DELTA_FEED_REQUIRED", `FEED_SOURCE_${feed.source.toUpperCase()}`] };
+  }
+  if (!feed.fresh) {
+    return { ...base, decision: "VETO", vetoReasons: ["DATA_STALE"] };
+  }
+  const maxFundingRate = Number(process.env.MAX_ENTRY_FUNDING_RATE ?? 0.003);
+  if (Math.abs(fundingRate) >= maxFundingRate) {
+    return { ...base, decision: "VETO", vetoReasons: [`EXTREME_FUNDING_${fundingRate.toFixed(6)}`] };
+  }
+  const hoursToEvent = snapshot.values.hours_to_next_tier1_event;
+  const blackoutHours = Number(process.env.NEWS_BLACKOUT_HOURS ?? 0.25);
+  if (Number.isFinite(hoursToEvent) && hoursToEvent >= 0 && hoursToEvent <= blackoutHours) {
+    return { ...base, decision: "VETO", vetoReasons: ["EVENT_BLACKOUT"] };
+  }
+
   if (!gates.passed) {
     return { ...base, decision: gates.downgradeToWatch ? "WATCH" : "VETO" };
   }
@@ -120,7 +138,7 @@ export function scoreCandidate(
     equity,
     entryPrice: candidate.entryPrice,
     stopPrice: candidate.stopPrice,
-    dataConfidence: DATA_CONFIDENCE,
+    dataConfidence,
     calibrationVintageDays,
     cellN: calibration.n,
     regimeConfidence: regime.confidence,
@@ -162,9 +180,14 @@ export function runPipeline(
     return { decision: "NONE", asset, regime, vetoReasons: [] };
   }
 
-  // MVP: act on the first candidate detected. Simultaneous multi-archetype
-  // firing is rare with three narrow detectors and one asset feed; the
-  // full system would score all candidates and rank by net EV.
-  const candidate = candidates[0];
-  return scoreCandidate(asset, candles, candidate, regime, equity, existingOpenRisk, circuitBreakerTripped, nowMs);
+  // Score every candidate and select the best risk-adjusted net EV. Detector
+  // order is not a trading priority and must never decide which setup wins.
+  const scored = candidates.map((candidate) =>
+    scoreCandidate(asset, candles, candidate, regime, equity, existingOpenRisk, circuitBreakerTripped, nowMs)
+  );
+  const viable = scored.filter((out) => out.decision === "OPEN");
+  if (viable.length > 0) {
+    return viable.sort((a, b) => (b.evNetR ?? -Infinity) - (a.evNetR ?? -Infinity))[0];
+  }
+  return scored.sort((a, b) => (b.evNetR ?? -Infinity) - (a.evNetR ?? -Infinity))[0];
 }

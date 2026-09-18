@@ -88,6 +88,19 @@ export function finalizeClose(trade: Trade, price: number, reason: string, time:
   trade.exitReason = reason;
 }
 
+/** Replace the estimated close with the exchange's actual weighted fill and P&L. */
+export function applyExchangeClose(trade: Trade, fillPrice: number, exchangePnl?: number, feeUsd = 0) {
+  if (!Number.isFinite(fillPrice) || fillPrice <= 0) return;
+  trade.exitPrice = fillPrice;
+  if (exchangePnl !== undefined && Number.isFinite(exchangePnl)) {
+    trade.realizedPnlUsd = exchangePnl - feeUsd - (trade.execution?.entryFeeUsd ?? 0);
+    trade.pnlUsd = trade.realizedPnlUsd;
+    trade.pnlPct = (trade.realizedPnlUsd / (trade.entryPrice * trade.initialQuantity)) * 100;
+    const stopDist = Math.abs(trade.entryPrice - trade.initialStopPrice) * trade.initialQuantity;
+    trade.rMultiple = stopDist > 0 ? trade.realizedPnlUsd / stopDist : 0;
+  }
+}
+
 export function manageTrade(trade: Trade, candles: Candle[], nowMs: number): ManagedResult {
   const price = candles[candles.length - 1].close;
   const dirSign = trade.direction === "LONG" ? 1 : -1;

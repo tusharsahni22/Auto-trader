@@ -118,12 +118,19 @@ async function tryMirrorOpen(trade: Trade, onUpdate: ExecutionUpdate): Promise<v
 
     const avgFillPrice = order?.average_fill_price ? Number(order.average_fill_price) : undefined;
 
+    // The exchange position is the authoritative quantity. Replace the
+    // fractional risk-model quantity with the exact integer-contract quantity
+    // before lifecycle P&L and exits are calculated.
+    trade.initialQuantity = contracts * contractValue;
+    trade.remainingQuantity = trade.initialQuantity;
+
     trade.execution = {
       venue: "DELTA",
       status: "FILLED",
       orderId: order?.id != null ? String(order.id) : undefined,
       contracts,
       avgFillPrice,
+      entryFeeUsd: Number(order?.paid_commission ?? order?.commission ?? 0) || undefined,
       requestedPrice: trade.entryPrice,
       placedAt: Date.now(),
     };
@@ -205,6 +212,9 @@ async function tryMirrorClose(trade: Trade, onUpdate: ExecutionUpdate): Promise<
       ...trade.execution,
       status: "CLOSED",
       closeOrderId: order?.id != null ? String(order.id) : undefined,
+      closeFillPrice: order?.average_fill_price != null ? Number(order.average_fill_price) : undefined,
+      closeFeeUsd: Number(order?.paid_commission ?? order?.commission ?? 0) || undefined,
+      exchangeRealizedPnlUsd: order?.meta_data?.pnl != null ? Number(order.meta_data.pnl) : undefined,
       closedAt: Date.now(),
     };
     onUpdate(trade);

@@ -10,6 +10,8 @@ const BINANCE_WS = "wss://stream.binance.com:9443/stream";
 const store = new Map<string, Candle[]>();
 const lastPrice = new Map<Asset, number>();
 const fundingRate = new Map<Asset, number>(); // most recent 8h funding rate, fraction (e.g. 0.0001 = 0.01%)
+const feedSource = new Map<Asset, "delta" | "binance">();
+const feedUpdatedAt = new Map<Asset, number>();
 
 function key(asset: Asset, interval: string) {
   return `${asset}:${interval}`;
@@ -27,7 +29,29 @@ export function getFundingRate(asset: Asset): number {
   return fundingRate.get(asset) ?? 0;
 }
 
+export function getMarketFeedHealth(asset: Asset) {
+  const updatedAt = feedUpdatedAt.get(asset) ?? 0;
+  const source = feedSource.get(asset) ?? "binance";
+  const ageMs = updatedAt ? Date.now() - updatedAt : Number.POSITIVE_INFINITY;
+  return { source, ageMs, fresh: ageMs <= 90_000 };
+}
+
 async function bootstrap(asset: Asset, interval: string, limit = 500) {
+  try {
+    const { getDeltaCandles } = await import("./services/deltaExchange.js");
+    const deltaCandles = await getDeltaCandles(asset, interval, limit);
+    if (deltaCandles.length > 0) {
+      store.set(key(asset, interval), deltaCandles);
+      lastPrice.set(asset, deltaCandles[deltaCandles.length - 1].close);
+      feedSource.set(asset, "delta");
+      feedUpdatedAt.set(asset, Date.now());
+      const latest = deltaCandles[deltaCandles.length - 1];
+      for (const listener of listeners) listener(asset, latest.close, latest);
+      return;
+    }
+  } catch (error) {
+    console.warn(`[marketData] Delta feed unavailable for ${asset}; using Binance fallback`, (error as Error).message);
+  }
   const url = `${BINANCE_REST}/api/v3/klines?symbol=${asset}&interval=${interval}&limit=${limit}`;
   const res = await fetch(url);
   if (!res.ok) throw new Error(`Binance klines failed: ${res.status}`);
@@ -41,10 +65,25 @@ async function bootstrap(asset: Asset, interval: string, limit = 500) {
     volume: Number(k[5]),
   }));
   store.set(key(asset, interval), candles);
-  if (candles.length) lastPrice.set(asset, candles[candles.length - 1].close);
+  if (candles.length) {
+    lastPrice.set(asset, candles[candles.length - 1].close);
+    feedSource.set(asset, "binance");
+    feedUpdatedAt.set(asset, Date.now());
+  }
 }
 
 async function refreshFundingRate(asset: Asset) {
+  try {
+    const { getDeltaTicker, assetToDeltaSymbol } = await import("./services/deltaExchange.js");
+    const deltaTicker = await getDeltaTicker(assetToDeltaSymbol(asset));
+    const deltaFunding = Number(deltaTicker?.funding_rate ?? deltaTicker?.funding_rate_8h);
+    if (Number.isFinite(deltaFunding)) {
+      fundingRate.set(asset, deltaFunding);
+      return;
+    }
+  } catch {
+    // Public Binance funding is the explicitly marked fallback below.
+  }
   try {
     const res = await fetch(`${BINANCE_FAPI}/fapi/v1/premiumIndex?symbol=${asset}`);
     if (!res.ok) return;
@@ -56,13 +95,18 @@ async function refreshFundingRate(asset: Asset) {
 }
 
 function upsertLiveCandle(asset: Asset, interval: string, candle: Candle) {
+  if (feedSource.get(asset) === "delta") return;
   const arr = store.get(key(asset, interval)) ?? [];
   const idx = arr.findIndex((c) => c.time === candle.time);
   if (idx >= 0) arr[idx] = candle;
   else arr.push(candle);
   if (arr.length > 1000) arr.shift();
   store.set(key(asset, interval), arr);
-  lastPrice.set(asset, candle.close);
+  if (feedSource.get(asset) !== "delta") {
+    lastPrice.set(asset, candle.close);
+    feedSource.set(asset, "binance");
+    feedUpdatedAt.set(asset, Date.now());
+  }
 }
 
 export type PriceListener = (asset: Asset, price: number, candle: Candle) => void;
@@ -95,6 +139,16 @@ export async function startMarketData(assets: Asset[], intervals: string[]) {
     for (const asset of assets) refreshFundingRate(asset);
   }, 5 * 60 * 1000);
 
+  // Delta is authoritative for the strategy. Refresh its candles frequently
+  // enough to replace the Binance fallback and restore source freshness.
+  setInterval(() => {
+    for (const asset of assets) {
+      for (const interval of intervals) {
+        bootstrap(asset, interval).catch((e) => console.warn(`[marketData] Delta refresh failed for ${asset}`, (e as Error).message));
+      }
+    }
+  }, 60_000);
+
   const streams = assets.flatMap((a) =>
     intervals.map((i) => `${a.toLowerCase()}@kline_${i}`)
   ).join("/");
@@ -122,6 +176,7 @@ export async function startMarketData(assets: Asset[], intervals: string[]) {
         };
         lastMessageAt = Date.now();
         upsertLiveCandle(asset, interval, candle);
+        if (feedSource.get(asset) === "delta") return;
         if (interval === intervals[0]) {
           for (const l of listeners) l(asset, candle.close, candle);
         }

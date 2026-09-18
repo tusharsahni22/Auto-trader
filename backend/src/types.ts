@@ -96,6 +96,10 @@ export interface TradeExecution {
   status: ExecutionStatus;
   orderId?: string;
   closeOrderId?: string;
+  closeFillPrice?: number;
+  entryFeeUsd?: number;
+  closeFeeUsd?: number;
+  exchangeRealizedPnlUsd?: number;
   contracts?: number;
   avgFillPrice?: number;
   /** Price the local feed expected, before reconciling to the exchange fill. */

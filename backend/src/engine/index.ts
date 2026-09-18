@@ -7,7 +7,7 @@ import { classifyRegime } from "../decision/regime.js";
 import { detectArchetypes } from "../decision/archetypes.js";
 import { atr } from "../lib/indicators.js";
 import type { ArchetypeCandidate } from "../decision/types.js";
-import { finalizeClose, manageTrade } from "../lifecycle/manager.js";
+import { applyExchangeClose, finalizeClose, manageTrade } from "../lifecycle/manager.js";
 import { onTradeClosed } from "../learning/recalibrate.js";
 import { evaluateCircuitBreakers, openRiskFromTrade, type OpenRisk } from "../risk/portfolio.js";
 
@@ -599,6 +599,9 @@ function persistTradeClose(trade: Trade) {
   void (async () => {
     const { mirrorCloseToDelta } = await import("../services/execution.js");
     await mirrorCloseToDelta(trade, (updatedTrade) => {
+      if (updatedTrade.execution?.closeFillPrice) {
+        applyExchangeClose(updatedTrade, updatedTrade.execution.closeFillPrice, updatedTrade.execution.exchangeRealizedPnlUsd, updatedTrade.execution.closeFeeUsd ?? 0);
+      }
       upsertTrade(updatedTrade);
       broadcast("trade_updated", updatedTrade);
     });
