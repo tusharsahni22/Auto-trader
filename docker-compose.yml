@@ -28,7 +28,7 @@ services:
   # ===========================================
   backend:
     build: ./backend
-    image: tusharsahni22/auto-trader:tagname-backend
+    image: tusharsahni22/auto-trader:backend-latest
     ports:
       - "4000:4000"
     environment:
@@ -76,7 +76,7 @@ services:
 
   frontend:
     build: ./frontend
-    image: tusharsahni22/auto-trader:tagname-frontend
+    image: tusharsahni22/auto-trader:frontend-latest
     ports:
       - "5173:5173"
     depends_on:
