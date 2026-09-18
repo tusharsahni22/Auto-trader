@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { getCandles, getFundingRate } from "../marketData.js";
-import { closeTradeManually, forceOpenTrade, getAssets, getBalanceInfo, getEngineState, getEquityCurve, getInterval, getLastScans, getOpenPositions, getRecentOpportunities, reconcileDeltaPositions, startEngine, stopEngine, syncEngineFromLedger, updateTradeStop } from "../engine/index.js";
+import { closeTradeManually, forceOpenTrade, getAssets, getBalanceInfo, getEngineState, getEquityCurve, getInterval, getLastScans, getOpenPositions, getRecentOpportunities, getSharedEngineState, reconcileDeltaPositions, startEngine, stopEngine, syncEngineFromLedger, updateTradeStop } from "../engine/index.js";
 import { getEngineRole, getTrades, refreshLedger } from "../db.js";
 import { classifyRegime } from "../decision/regime.js";
 import { getAllCellStats, getPlattParams } from "../learning/stats.js";
@@ -30,8 +30,8 @@ api.use("/bot", botRouter);
 // Mount market data routes
 api.use("/market", marketRouter);
 
-api.get("/status", (_req, res) => {
-  res.json({ engine: getEngineState(), role: getEngineRole(), delta: getDeltaConnectionInfo(), assets: getAssets(), interval: getInterval(), scans: getLastScans() });
+api.get("/status", async (_req, res) => {
+  res.json({ engine: await getSharedEngineState(), role: getEngineRole(), delta: getDeltaConnectionInfo(), assets: getAssets(), interval: getInterval(), scans: getLastScans() });
 });
 
 api.post("/engine/start", async (_req, res) => {
@@ -45,6 +45,10 @@ api.post("/engine/start", async (_req, res) => {
 });
 
 api.post("/engine/stop", (_req, res) => {
+  if (!getEngineRole().isLeader) {
+    res.status(409).json({ ok: false, error: `Engine is controlled by the leader instance (${getEngineRole().leaderId})` });
+    return;
+  }
   stopEngine();
   res.json({ ok: true, engine: getEngineState() });
 });

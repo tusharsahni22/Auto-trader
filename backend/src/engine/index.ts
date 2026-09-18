@@ -113,6 +113,22 @@ export async function syncEngineFromLedger() {
   reloadPersistedState();
 }
 
+/** Shared status for read-only instances; engine execution remains leader-only. */
+export async function getSharedEngineState(): Promise<EngineState> {
+  await refreshLedger();
+  const sharedRunning = getKv("engineRunning");
+  const sharedStartedAt = getKv("engineStartedAt");
+  if (sharedRunning !== null) {
+    return {
+      ...state,
+      running: sharedRunning === "true",
+      startedAt: sharedStartedAt ? Number(sharedStartedAt) : null,
+      equity: Number(getKv("equity") ?? state.equity),
+    };
+  }
+  return state;
+}
+
 function loadOpenTradesFromDb() {
   for (const t of getTrades()) {
     if (t.status === "OPEN") openTrades.set(t.id, t);
@@ -655,12 +671,16 @@ export async function initEngine() {
 export function startEngine() {
   state.running = true;
   state.startedAt = Date.now();
+  setKv("engineRunning", "true");
+  setKv("engineStartedAt", String(state.startedAt));
   broadcast("engine_state", state);
 }
 
 export function stopEngine() {
   state.running = false;
   state.startedAt = null;
+  setKv("engineRunning", "false");
+  setKv("engineStartedAt", "");
   void releaseEngineLease().catch((error) => console.error("[engine] lease release failed:", error));
   broadcast("engine_state", state);
 }

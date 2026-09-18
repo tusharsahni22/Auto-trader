@@ -116,6 +116,10 @@ export default function App() {
 
     const refreshBalance = () => api.balance().then(setBalance).catch(() => {});
     const refreshSharedState = () => {
+      api.status().then((s) => {
+        setEngine(s.engine);
+        setEngineRole(s.role);
+      }).catch(() => {});
       refreshTrades();
       api.equityCurve().then(setEquityCurve).catch(() => {});
     };
