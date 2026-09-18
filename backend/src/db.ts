@@ -38,6 +38,15 @@ const LEASE_ID = "engine-leader";
 const INSTANCE_ID = process.env.ENGINE_INSTANCE_ID ?? "local";
 const LEADER_ID = process.env.ENGINE_LEADER_ID ?? "domain";
 
+export function getEngineRole() {
+  return {
+    instanceId: INSTANCE_ID,
+    leaderId: LEADER_ID,
+    isLeader: INSTANCE_ID === LEADER_ID,
+    mongoConnected: isMongoConnected(),
+  };
+}
+
 function stateCollection() {
   return getMongoConnection().collection<StoreShape & { _id: string }>("autoTraderState");
 }

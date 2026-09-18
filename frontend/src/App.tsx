@@ -7,6 +7,7 @@ import {
   type BotDecision,
   type BotState,
   type BotStats,
+  type EngineRole,
 } from "./lib/api";
 import { useSocket } from "./lib/useSocket";
 import { bollingerOverlays, breakoutOverlay, emaOverlay, smaOverlay } from "./lib/indicators";
@@ -53,6 +54,7 @@ export default function App() {
   const [candleSource, setCandleSource] = useState<string | null>(null);
   const [liveCandle, setLiveCandle] = useState<Candle | null>(null);
   const [engine, setEngine] = useState<EngineState | null>(null);
+  const [engineRole, setEngineRole] = useState<EngineRole | undefined>();
   const [trades, setTrades] = useState<Trade[]>([]);
   const [equityCurve, setEquityCurve] = useState<PnlPoint[]>([]);
   const [selectedTrade, setSelectedTrade] = useState<Trade | null>(null);
@@ -103,6 +105,7 @@ export default function App() {
   useEffect(() => {
     api.status().then((s) => {
       setEngine(s.engine);
+      setEngineRole(s.role);
       const byAsset: Record<string, ScanInfo> = {};
       for (const s2 of s.scans ?? []) byAsset[s2.asset] = s2;
       setScans(byAsset);
@@ -349,7 +352,7 @@ export default function App() {
             ))}
           </div>
         </div>
-        <EngineControls engine={engine} asset={asset} />
+          <EngineControls engine={engine} asset={asset} role={engineRole} />
       </header>
 
       <StatCards engine={engine} trades={trades} balance={balance} />

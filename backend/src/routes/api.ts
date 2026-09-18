@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { getCandles, getFundingRate } from "../marketData.js";
 import { closeTradeManually, forceOpenTrade, getAssets, getBalanceInfo, getEngineState, getEquityCurve, getInterval, getLastScans, getOpenPositions, getRecentOpportunities, startEngine, stopEngine, updateTradeStop } from "../engine/index.js";
-import { getTrades, refreshLedger } from "../db.js";
+import { getEngineRole, getTrades, refreshLedger } from "../db.js";
 import { classifyRegime } from "../decision/regime.js";
 import { getAllCellStats, getPlattParams } from "../learning/stats.js";
 import { newsCalendarRouter } from "./newsCalendar.js";
@@ -30,7 +30,7 @@ api.use("/bot", botRouter);
 api.use("/market", marketRouter);
 
 api.get("/status", (_req, res) => {
-  res.json({ engine: getEngineState(), assets: getAssets(), interval: getInterval(), scans: getLastScans() });
+  res.json({ engine: getEngineState(), role: getEngineRole(), assets: getAssets(), interval: getInterval(), scans: getLastScans() });
 });
 
 api.post("/engine/start", async (_req, res) => {

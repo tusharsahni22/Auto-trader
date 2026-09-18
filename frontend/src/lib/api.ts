@@ -118,6 +118,13 @@ export interface BalanceInfo {
   error?: string;
 }
 
+export interface EngineRole {
+  instanceId: string;
+  leaderId: string;
+  isLeader: boolean;
+  mongoConnected: boolean;
+}
+
 async function mutate<T>(res: Response): Promise<T> {
   const body = await res.json().catch(() => ({}));
   if (!res.ok || (body as any).ok === false) {
@@ -127,13 +134,14 @@ async function mutate<T>(res: Response): Promise<T> {
 }
 
 async function json<T>(res: Response): Promise<T> {
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-  return res.json() as Promise<T>;
+  const body = await res.json().catch(() => null) as { error?: string } | null;
+  if (!res.ok) throw new Error(body?.error ?? `${res.status} ${res.statusText}`);
+  return body as T;
 }
 
 export const api = {
   status: () =>
-    fetch("/api/status").then((r) => json<{ engine: EngineState; assets: Asset[]; interval: string; scans: ScanInfo[] }>(r)),
+    fetch("/api/status").then((r) => json<{ engine: EngineState; role?: EngineRole; assets: Asset[]; interval: string; scans: ScanInfo[] }>(r)),
   startEngine: () => fetch("/api/engine/start", { method: "POST" }).then((r) => json<{ ok: boolean }>(r)),
   stopEngine: () => fetch("/api/engine/stop", { method: "POST" }).then((r) => json<{ ok: boolean }>(r)),
   candles: (asset: Asset) => fetch(`/api/candles/${asset}`).then((r) => json<Candle[]>(r)),
