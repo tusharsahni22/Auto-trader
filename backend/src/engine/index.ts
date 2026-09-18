@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Asset, Direction, EngineState, Trade, VetoedOpportunity } from "../types.js";
 import { getCandles, getLastPrice, onPrice, startMarketData } from "../marketData.js";
-import { addEquityPoint, getEquityCurve, getKv, getTrades, releaseEngineLease, setKv, upsertTrade } from "../db.js";
+import { addEquityPoint, getEquityCurve, getKv, getTrades, refreshLedger, releaseEngineLease, setKv, upsertTrade } from "../db.js";
 import { runPipeline, scoreCandidate, type PipelineOutput } from "../decision/pipeline.js";
 import { classifyRegime } from "../decision/regime.js";
 import { detectArchetypes } from "../decision/archetypes.js";
@@ -82,6 +82,8 @@ let state: EngineState = {
   openPositions: 0,
 };
 
+let reconciliationRunning = false;
+
 let equityPeak = Number(getKv("equityPeak") ?? state.equity);
 let dayStartEquity = Number(getKv("dayStartEquity") ?? state.equity);
 let dayStartDate = getKv("dayStartDate") ?? new Date().toISOString().slice(0, 10);
@@ -104,6 +106,11 @@ export function reloadPersistedState() {
   dayStartDate = getKv("dayStartDate") ?? new Date().toISOString().slice(0, 10);
   openTrades.clear();
   loadOpenTradesFromDb();
+}
+
+export async function syncEngineFromLedger() {
+  await refreshLedger();
+  reloadPersistedState();
 }
 
 function loadOpenTradesFromDb() {
@@ -560,6 +567,51 @@ function persistTradeClose(trade: Trade) {
   broadcast("equity", { time: Date.now(), equity: state.equity });
 }
 
+/**
+ * Reconcile positions that were closed directly on Delta or by another client.
+ * The exchange is authoritative for live DELTA positions; MongoDB then becomes
+ * the shared read model for both dashboards.
+ */
+export async function reconcileDeltaPositions() {
+  if (reconciliationRunning || !deltaConfigured()) return;
+  if (process.env.ENGINE_INSTANCE_ID !== (process.env.ENGINE_LEADER_ID ?? "domain")) return;
+  reconciliationRunning = true;
+  try {
+    const { getDeltaPositions } = await import("../services/deltaExchange.js");
+    const positions = await getDeltaPositions();
+    const live = new Map<string, number>();
+    for (const position of positions) {
+      const symbol = String(position.product_symbol ?? position.symbol ?? "");
+      const size = Math.abs(Number(position.size ?? position.position_size ?? 0));
+      if (symbol && Number.isFinite(size) && size > 0) live.set(symbol, size);
+    }
+
+    for (const trade of [...openTrades.values()]) {
+      if (trade.execution?.venue !== "DELTA" || trade.execution.status !== "FILLED") continue;
+      const symbol = trade.asset.replace(/USDT$/, "USD");
+      const exchangeSize = live.get(symbol) ?? 0;
+      if (exchangeSize > 0) continue;
+
+      const mark = getLastPrice(trade.asset) ?? trade.entryPrice;
+      finalizeClose(trade, mark, "EXCHANGE_EXTERNAL_CLOSE", Date.now());
+      trade.execution = { ...trade.execution, status: "CLOSED", closedAt: Date.now() };
+      openTrades.delete(trade.id);
+      state.openPositions = openTrades.size;
+      upsertTrade(trade);
+      state.equity += trade.realizedPnlUsd;
+      persistEquity(trade.realizedPnlUsd);
+      onTradeClosed(trade);
+      broadcast("trade_closed", trade);
+      broadcast("equity", { time: Date.now(), equity: state.equity });
+      console.log(`[reconcile] marked ${trade.id} closed because Delta has no ${symbol} position`);
+    }
+  } catch (error: any) {
+    console.warn(`[reconcile] Delta position sync failed: ${error?.message ?? error}`);
+  } finally {
+    reconciliationRunning = false;
+  }
+}
+
 let initialized = false;
 
 export async function initEngine() {
@@ -591,6 +643,8 @@ export async function initEngine() {
   }
 
   await startMarketData(ASSETS, [INTERVAL]);
+  void reconcileDeltaPositions();
+  setInterval(() => void reconcileDeltaPositions(), 10_000);
   onPrice((asset) => {
     manageOpenTrades(asset);
     tryOpenPosition(asset);

@@ -115,14 +115,20 @@ export default function App() {
     api.opportunities().then(setOpportunities);
 
     const refreshBalance = () => api.balance().then(setBalance).catch(() => {});
+    const refreshSharedState = () => {
+      refreshTrades();
+      api.equityCurve().then(setEquityCurve).catch(() => {});
+    };
     refreshBalance();
     const balanceId = setInterval(refreshBalance, 30_000);
+    const stateId = setInterval(refreshSharedState, 10_000);
 
     refreshBot();
     const botId = setInterval(refreshBot, 20_000);
 
     return () => {
       clearInterval(balanceId);
+      clearInterval(stateId);
       clearInterval(botId);
     };
   }, []);

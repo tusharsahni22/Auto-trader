@@ -339,6 +339,15 @@ export function getDeltaExchangeConfig(): DeltaExchangeConfig {
   };
 }
 
+/** Safe diagnostics for verifying both deployments use the same Delta account/venue. */
+export function getDeltaConnectionInfo() {
+  return {
+    baseUrl: BASE_URL,
+    apiKeyPrefix: API_KEY ? `${API_KEY.substring(0, 8)}...` : null,
+    configured: isDeltaExchangeEnabled(),
+  };
+}
+
 /**
  * Execute a trade on Delta Exchange (wrapper for internal use)
  */

@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { getCandles, getFundingRate } from "../marketData.js";
-import { closeTradeManually, forceOpenTrade, getAssets, getBalanceInfo, getEngineState, getEquityCurve, getInterval, getLastScans, getOpenPositions, getRecentOpportunities, startEngine, stopEngine, updateTradeStop } from "../engine/index.js";
+import { closeTradeManually, forceOpenTrade, getAssets, getBalanceInfo, getEngineState, getEquityCurve, getInterval, getLastScans, getOpenPositions, getRecentOpportunities, reconcileDeltaPositions, startEngine, stopEngine, syncEngineFromLedger, updateTradeStop } from "../engine/index.js";
 import { getEngineRole, getTrades, refreshLedger } from "../db.js";
 import { classifyRegime } from "../decision/regime.js";
 import { getAllCellStats, getPlattParams } from "../learning/stats.js";
@@ -11,6 +11,7 @@ import { botRouter } from "./bot.js";
 import { marketRouter } from "./market.js";
 import type { Asset, Direction } from "../types.js";
 import { acquireEngineLease } from "../db.js";
+import { getDeltaConnectionInfo } from "../services/deltaExchange.js";
 
 export const api = Router();
 
@@ -30,7 +31,7 @@ api.use("/bot", botRouter);
 api.use("/market", marketRouter);
 
 api.get("/status", (_req, res) => {
-  res.json({ engine: getEngineState(), role: getEngineRole(), assets: getAssets(), interval: getInterval(), scans: getLastScans() });
+  res.json({ engine: getEngineState(), role: getEngineRole(), delta: getDeltaConnectionInfo(), assets: getAssets(), interval: getInterval(), scans: getLastScans() });
 });
 
 api.post("/engine/start", async (_req, res) => {
@@ -80,12 +81,18 @@ api.get("/trades", async (req, res) => {
   res.json(trades);
 });
 
-api.get("/positions", (_req, res) => {
+api.get("/positions", async (_req, res) => {
+  await syncEngineFromLedger();
   const positions = getOpenPositions();
   res.json({
     positions,
     totalUnrealized: positions.reduce((sum, p) => sum + p.unrealized, 0),
   });
+});
+
+api.post("/reconcile", async (_req, res) => {
+  await reconcileDeltaPositions();
+  res.json({ ok: true, positions: getOpenPositions() });
 });
 
 api.post("/positions/:id/close", (req, res) => {
