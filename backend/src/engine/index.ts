@@ -23,7 +23,17 @@ const STARTING_EQUITY = Number(process.env.STARTING_EQUITY ?? 10000);
  * number — a silent fallback would present the simulated starting equity as a
  * real exchange balance, which is exactly the thing we must never do.
  */
-let cachedDeltaBalance: number | null = null;
+interface DeltaBalanceSnapshot {
+  equity: number;
+  walletBalance: number;
+  availableBalance: number;
+  unrealizedPnl: number;
+  positionMargin: number;
+  assetSymbol: string;
+  fetchedAt: number;
+}
+
+let cachedDeltaBalance: DeltaBalanceSnapshot | null = null;
 let lastBalanceFetch = 0;
 const BALANCE_CACHE_MS = 30000;
 const SETTLEMENT_SYMBOLS = ["USDT", "USD", "USDC"];
@@ -32,7 +42,7 @@ function deltaConfigured(): boolean {
   return Boolean(process.env.DELTA_EXCHANGE_API_KEY && process.env.DELTA_EXCHANGE_API_SECRET);
 }
 
-async function fetchDeltaBalance(): Promise<number> {
+async function fetchDeltaBalance(): Promise<DeltaBalanceSnapshot> {
   if (!deltaConfigured()) {
     throw new Error("Delta Exchange credentials not configured");
   }
@@ -64,14 +74,34 @@ async function fetchDeltaBalance(): Promise<number> {
   }
 
   const funded = wallets.find((w: any) => Number(w.available_balance ?? w.balance) > 0) ?? wallets[0];
-  const available = Number(funded.available_balance ?? funded.balance);
-  if (!Number.isFinite(available)) {
-    throw new Error(`Delta Exchange returned a non-numeric ${symbolOf(funded)} balance`);
+  const numberField = (...names: string[]) => {
+    for (const name of names) {
+      const value = Number(funded[name]);
+      if (Number.isFinite(value)) return value;
+    }
+    return 0;
+  };
+  const walletBalance = numberField("balance", "wallet_balance");
+  const availableBalance = numberField("available_balance", "available");
+  const unrealizedPnl = numberField("unrealized_pnl", "unrealizedPnl");
+  const positionMargin = numberField("position_margin", "blocked_margin", "margin");
+  const reportedEquity = numberField("equity", "account_equity");
+  const equity = reportedEquity !== 0 ? reportedEquity : walletBalance + unrealizedPnl;
+  if (!Number.isFinite(equity)) {
+    throw new Error(`Delta Exchange returned non-numeric balance fields for ${symbolOf(funded)}`);
   }
 
-  cachedDeltaBalance = available;
+  cachedDeltaBalance = {
+    equity,
+    walletBalance,
+    availableBalance,
+    unrealizedPnl,
+    positionMargin,
+    assetSymbol: String(symbolOf(funded)),
+    fetchedAt: now,
+  };
   lastBalanceFetch = now;
-  return available;
+  return cachedDeltaBalance;
 }
 
 let state: EngineState = {
@@ -638,14 +668,14 @@ export async function initEngine() {
   if (deltaConfigured()) {
     try {
       const deltaBalance = await fetchDeltaBalance();
-      console.log(`[engine] Equity from Delta Exchange: ${deltaBalance}`);
-      state.equity = deltaBalance;
-      state.startingEquity = deltaBalance;
+      console.log(`[engine] Delta equity: ${deltaBalance.equity}, available: ${deltaBalance.availableBalance}`);
+      state.equity = deltaBalance.equity;
+      state.startingEquity = deltaBalance.equity;
       // Rebase the drawdown references too. Carrying over a peak from the
       // simulated equity would read as a near-total drawdown against a smaller
       // real balance and trip the circuit breakers on startup.
-      equityPeak = deltaBalance;
-      dayStartEquity = deltaBalance;
+      equityPeak = deltaBalance.equity;
+      dayStartEquity = deltaBalance.equity;
       setKv("equityPeak", String(equityPeak));
       setKv("dayStartEquity", String(dayStartEquity));
       persistEquity(0);
@@ -707,6 +737,12 @@ export function getRecentOpportunities() {
  */
 export async function getBalanceInfo(): Promise<{
   equity: number;
+  walletBalance?: number;
+  availableBalance?: number;
+  unrealizedPnl?: number;
+  positionMargin?: number;
+  assetSymbol?: string;
+  fetchedAt?: number;
   source: "delta_exchange" | "simulated";
   deltaConfigured: boolean;
   error?: string;
@@ -717,8 +753,8 @@ export async function getBalanceInfo(): Promise<{
 
   try {
     const balance = await fetchDeltaBalance();
-    state.equity = balance;
-    return { equity: balance, source: "delta_exchange", deltaConfigured: true };
+    state.equity = balance.equity;
+    return { ...balance, source: "delta_exchange", deltaConfigured: true };
   } catch (error: any) {
     return {
       equity: state.equity,

@@ -68,7 +68,7 @@ export default function StatCards({ engine, trades, balance }: Props) {
       {balance && (
         <div className="col-span-2 text-xs text-ink-faint md:col-span-4">
           {balance.source === "delta_exchange"
-            ? "Equity is the live Delta Exchange wallet balance."
+            ? `Live Delta equity${balance.availableBalance !== undefined ? ` · available ${fmtUsd(balance.availableBalance)}` : ""}${balance.unrealizedPnl ? ` · unrealized P&L ${fmtUsd(balance.unrealizedPnl)}` : ""}.`
             : balance.deltaConfigured
               ? `Simulated equity — Delta Exchange balance unavailable: ${balance.error}`
               : "Simulated equity — Delta Exchange is not configured."}

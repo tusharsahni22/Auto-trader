@@ -113,6 +113,12 @@ export interface TradeStats {
 
 export interface BalanceInfo {
   equity: number;
+  walletBalance?: number;
+  availableBalance?: number;
+  unrealizedPnl?: number;
+  positionMargin?: number;
+  assetSymbol?: string;
+  fetchedAt?: number;
   source: "delta_exchange" | "simulated";
   deltaConfigured: boolean;
   error?: string;
