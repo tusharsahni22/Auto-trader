@@ -140,12 +140,21 @@ export function acf1(returns: number[]): number {
   return den === 0 ? 0 : num / den;
 }
 
-/** Simplified ADX (trend strength), 0-100. */
+/**
+ * Wilder's ADX (trend strength), 0-100.
+ * FIX: The prior implementation used simple sums of the last `period` bars,
+ * producing values numerically different from any charting platform. Real ADX
+ * uses Wilder's exponential smoothing (identical to the smoothing used in RSI).
+ * The gate threshold of 22 is calibrated against chart ADX values, so the
+ * computation must match what traders see on charts.
+ */
 export function adx(candles: Candle[], period = 14): number {
-  if (candles.length < period * 2) return 0;
+  if (candles.length < period * 2 + 1) return 0;
+
   const plusDM: number[] = [];
   const minusDM: number[] = [];
   const trs: number[] = [];
+
   for (let i = 1; i < candles.length; i++) {
     const up = candles[i].high - candles[i - 1].high;
     const down = candles[i - 1].low - candles[i].low;
@@ -159,15 +168,36 @@ export function adx(candles: Candle[], period = 14): number {
       )
     );
   }
-  const smooth = (arr: number[]) => {
-    const w = arr.slice(-period);
-    return w.reduce((a, b) => a + b, 0);
-  };
-  const trSum = smooth(trs) || 1e-9;
-  const plusDI = (100 * smooth(plusDM)) / trSum;
-  const minusDI = (100 * smooth(minusDM)) / trSum;
-  const dx = (100 * Math.abs(plusDI - minusDI)) / (plusDI + minusDI || 1e-9);
-  return dx;
+
+  // Wilder's initial smoothing: sum of first `period` values
+  let smoothTR = trs.slice(0, period).reduce((a, b) => a + b, 0);
+  let smoothPDM = plusDM.slice(0, period).reduce((a, b) => a + b, 0);
+  let smoothMDM = minusDM.slice(0, period).reduce((a, b) => a + b, 0);
+
+  const dxValues: number[] = [];
+
+  for (let i = period; i < trs.length; i++) {
+    // Wilder's smoothing: prev_smooth - (prev_smooth / period) + current
+    smoothTR = smoothTR - smoothTR / period + trs[i];
+    smoothPDM = smoothPDM - smoothPDM / period + plusDM[i];
+    smoothMDM = smoothMDM - smoothMDM / period + minusDM[i];
+
+    const plusDI = smoothTR > 0 ? (100 * smoothPDM) / smoothTR : 0;
+    const minusDI = smoothTR > 0 ? (100 * smoothMDM) / smoothTR : 0;
+    const diSum = plusDI + minusDI;
+    const dx = diSum > 0 ? (100 * Math.abs(plusDI - minusDI)) / diSum : 0;
+    dxValues.push(dx);
+  }
+
+  if (dxValues.length === 0) return 0;
+
+  // ADX = Wilder's smooth of DX values
+  let adxVal = dxValues.slice(0, period).reduce((a, b) => a + b, 0) / period;
+  for (let i = period; i < dxValues.length; i++) {
+    adxVal = (adxVal * (period - 1) + dxValues[i]) / period;
+  }
+
+  return adxVal;
 }
 
 /** Bollinger bandwidth (upper-lower)/mid, as a fraction. */

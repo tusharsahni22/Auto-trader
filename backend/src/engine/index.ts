@@ -188,7 +188,7 @@ function rolloverDayIfNeeded() {
 function getOpenRiskExcept(asset: Asset | null): OpenRisk[] {
   return [...openTrades.values()]
     .filter((t) => t.asset !== asset)
-    .map((t) => openRiskFromTrade(t, getLastPrice(t.asset) ?? t.entryPrice));
+    .map((t) => openRiskFromTrade(t, getLastPrice(t.asset) ?? t.entryPrice, state.equity));
 }
 
 function circuitBreakerTripped(): boolean {
@@ -454,7 +454,7 @@ export function openManualTrade(params: {
     id: randomUUID(),
     asset,
     direction,
-    archetype: "COMPRESSION_BREAKOUT",
+    archetype: "MANUAL" as any,
     regime: classifyRegime(asset, getCandles(asset, INTERVAL), Date.now()).label,
     entryPrice,
     entryTime: Date.now(),
@@ -586,7 +586,17 @@ function manageOpenTrades(asset: Asset) {
     if (trade.asset !== asset) continue;
     const result = manageTrade(trade, candles, Date.now());
     upsertTrade(result.trade);
-    if (result.newFills.length > 0) broadcast("trade_updated", result.trade);
+    if (result.newFills.length > 0) {
+      broadcast("trade_updated", result.trade);
+      // Fire partial closes to the exchange immediately so they aren't phantom paper trades
+      void (async () => {
+        const { mirrorPartialCloseToDelta } = await import("../services/execution.js");
+        for (const fill of result.newFills) {
+          await mirrorPartialCloseToDelta(result.trade, fill.fraction);
+          upsertTrade(result.trade);
+        }
+      })();
+    }
     if (result.closed) {
       openTrades.delete(trade.id);
       state.openPositions = openTrades.size;
@@ -647,12 +657,19 @@ export async function reconcileDeltaPositions() {
       openTrades.delete(trade.id);
       state.openPositions = openTrades.size;
       upsertTrade(trade);
-      state.equity += trade.realizedPnlUsd;
-      persistEquity(trade.realizedPnlUsd);
       onTradeClosed(trade);
       broadcast("trade_closed", trade);
-      broadcast("equity", { time: Date.now(), equity: state.equity });
+      
       console.log(`[reconcile] marked ${trade.id} closed because Delta has no ${symbol} position`);
+      try {
+        const balance = await fetchDeltaBalance();
+        state.equity = balance.equity;
+        persistEquity(0);
+        console.log(`[reconcile] synced true equity from Delta: $${balance.equity}`);
+      } catch (e: any) {
+        console.error("[reconcile] failed to sync equity after external close", e?.message ?? e);
+      }
+      broadcast("equity", { time: Date.now(), equity: state.equity });
     }
   } catch (error: any) {
     console.warn(`[reconcile] Delta position sync failed: ${error?.message ?? error}`);
@@ -662,6 +679,7 @@ export async function reconcileDeltaPositions() {
 }
 
 let initialized = false;
+const lastEvaluatedCandle = new Map<string, number>();
 
 export async function initEngine() {
   if (initialized) return;
@@ -695,9 +713,31 @@ export async function initEngine() {
   void reconcileDeltaPositions();
   setInterval(() => void reconcileDeltaPositions(), 10_000);
   onPrice((asset) => {
+    const currentPrice = getLastPrice(asset);
+    if (currentPrice === null || currentPrice <= 0) return;
+
+    const candles = getCandles(asset, INTERVAL);
+    if (candles.length > 0) {
+      const lastClose = candles[candles.length - 1].close;
+      // Outlier filter: ignore absurd 5% single-tick moves (API glitches)
+      if (Math.abs(currentPrice - lastClose) / lastClose > 0.05) {
+        console.warn(`[engine] Ignored absurd price tick for ${asset}: ${currentPrice}`);
+        return;
+      }
+    }
+
     manageOpenTrades(asset);
-    tryOpenPosition(asset);
-    broadcast("price", { asset, price: getLastPrice(asset), time: Date.now() });
+
+    // Throttle CPU-heavy pipeline evaluation to candle close
+    if (candles.length > 1) {
+      const currentCandleTime = candles[candles.length - 1].time;
+      if (lastEvaluatedCandle.get(asset) !== currentCandleTime) {
+        lastEvaluatedCandle.set(asset, currentCandleTime);
+        tryOpenPosition(asset);
+      }
+    }
+
+    broadcast("price", { asset, price: currentPrice, time: Date.now() });
   });
 }
 

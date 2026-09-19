@@ -139,7 +139,7 @@ export function manageTrade(trade: Trade, candles: Candle[], nowMs: number): Man
   // Breakeven (docs/04 §5.1) and chandelier trail (§5.2), after TP1 only, one-directional.
   if (tp1Hit) {
     const a = atr(candles, 14);
-    if (currentR >= BREAKEVEN_TRIGGER_R && !trade.breakevenMoved) {
+    if (!trade.breakevenMoved) {
       const be = trade.entryPrice;
       trade.stopPrice = dirSign === 1 ? Math.max(trade.stopPrice, be) : Math.min(trade.stopPrice, be);
       trade.breakevenMoved = true;
@@ -154,13 +154,11 @@ export function manageTrade(trade: Trade, candles: Candle[], nowMs: number): Man
 
   // Thesis decay (docs/04 §2).
   trade.thesisDecay = computeThesisDecay(trade, candles);
-  if (trade.thesisDecay < 0.25) {
+  if (trade.thesisDecay < 0.3) {
     finalizeClose(trade, price, "THESIS_INVALIDATED", nowMs);
     return { trade, closed: true, newFills: trade.fills.slice(before) };
   }
-  if (trade.thesisDecay < 0.4 && trade.remainingQuantity > trade.initialQuantity * 0.49) {
-    applyFill(trade, price, trade.remainingQuantity / trade.initialQuantity / 2, "DECAY_REDUCE", nowMs);
-  } else if (trade.thesisDecay < 0.6) {
+  if (trade.thesisDecay < 0.6) {
     const tighter = dirSign === 1 ? price - 1.2 * atr(candles, 14) : price + 1.2 * atr(candles, 14);
     trade.stopPrice = dirSign === 1 ? Math.max(trade.stopPrice, tighter) : Math.min(trade.stopPrice, tighter);
   }

@@ -51,7 +51,8 @@ export async function toContracts(
 ): Promise<{ contracts: number; contractValue: number }> {
   const product = await getDeltaProduct(asset);
   const contractValue = Number(product.contract_value);
-  return { contracts: Math.round(quantity / contractValue), contractValue };
+  // Always round down (floor) to avoid taking larger positions than Kelly sizing dictates
+  return { contracts: Math.floor(quantity / contractValue), contractValue };
 }
 
 /**
@@ -76,11 +77,17 @@ async function tryMirrorOpen(trade: Trade, onUpdate: ExecutionUpdate): Promise<v
   try {
     const mark = getLastPrice(trade.asset) ?? trade.entryPrice;
     const stopCrossed = trade.direction === "LONG" ? mark <= trade.stopPrice : mark >= trade.stopPrice;
-    if (stopCrossed) {
+    
+    const stopDist = Math.abs(trade.entryPrice - trade.stopPrice);
+    const slippage = trade.direction === "LONG" ? mark - trade.entryPrice : trade.entryPrice - mark;
+    const slippedTooFar = slippage > (stopDist * 0.25);
+    
+    if (stopCrossed || slippedTooFar) {
+      const reason = stopCrossed ? `crossed the stop ${trade.stopPrice}` : "slipped too far from entry";
       trade.execution = {
         ...trade.execution,
         status: "REJECTED",
-        error: `Retry cancelled: current price ${mark} has crossed the stop ${trade.stopPrice}`,
+        error: `Retry cancelled: current price ${mark} has ${reason}`,
         currentRiskUsd: currentRiskUsd(trade, mark),
       };
       onUpdate(trade);
@@ -113,10 +120,57 @@ async function tryMirrorOpen(trade: Trade, onUpdate: ExecutionUpdate): Promise<v
       asset: trade.asset,
       direction: trade.direction,
       size: contracts,
-      orderType: "MARKET",
+      orderType: "LIMIT",
+      limitPrice: mark,
     });
 
-    const avgFillPrice = order?.average_fill_price ? Number(order.average_fill_price) : undefined;
+    const orderId: string | undefined = order?.id != null ? String(order.id) : undefined;
+
+    // FIX: Limit order fill confirmation with timeout + auto-cancel.
+    // Without this, an unfilled limit order causes the engine to attempt to
+    // "close" a position that was never opened, which creates a reverse position.
+    const FILL_POLL_INTERVAL_MS = 10_000;  // check every 10s
+    const FILL_TIMEOUT_MS = Number(process.env.LIMIT_ORDER_TIMEOUT_MS ?? 120_000); // default 2 min
+    const pollStart = Date.now();
+    let avgFillPrice: number | undefined;
+
+    if (orderId) {
+      const { getDeltaOrderHistory, cancelDeltaOrder } = await import("./deltaExchange.js");
+      let filled = false;
+
+      while (Date.now() - pollStart < FILL_TIMEOUT_MS) {
+        await new Promise((r) => setTimeout(r, FILL_POLL_INTERVAL_MS));
+        try {
+          const history = await getDeltaOrderHistory({ limit: 20 });
+          const found = history.find((o: any) => String(o.id) === orderId);
+          if (found?.state === "filled" || found?.status === "filled") {
+            avgFillPrice = found?.average_fill_price ? Number(found.average_fill_price) : undefined;
+            filled = true;
+            break;
+          }
+          if (found?.state === "cancelled" || found?.state === "rejected") {
+            trade.execution = { venue: "DELTA", status: "REJECTED", error: `Order ${orderId} was ${found.state} on exchange`, orderId };
+            onUpdate(trade);
+            return;
+          }
+        } catch (pollErr: any) {
+          console.warn(`[execution] fill poll failed for ${trade.asset}: ${pollErr?.message ?? pollErr}`);
+        }
+      }
+
+      if (!filled) {
+        // Timeout: cancel the stale order to prevent it from being filled later
+        try {
+          await cancelDeltaOrder(orderId);
+          console.warn(`[execution] ${trade.asset} limit order ${orderId} not filled within ${FILL_TIMEOUT_MS / 1000}s — cancelled`);
+        } catch (cancelErr: any) {
+          console.error(`[execution] failed to cancel stale order ${orderId}:`, cancelErr?.message ?? cancelErr);
+        }
+        trade.execution = { venue: "DELTA", status: "REJECTED", error: `Limit order not filled within timeout (${FILL_TIMEOUT_MS / 1000}s)`, orderId };
+        onUpdate(trade);
+        return;
+      }
+    }
 
     // The exchange position is the authoritative quantity. Replace the
     // fractional risk-model quantity with the exact integer-contract quantity
@@ -137,19 +191,16 @@ async function tryMirrorOpen(trade: Trade, onUpdate: ExecutionUpdate): Promise<v
 
     // The engine prices off Binance BTCUSDT while Delta settles against its own
     // BTCUSD index; the two can differ by over 1%. Left alone the local record
-    // would compute P&L from a price we never actually traded at, so the whole
-    // setup is shifted onto the real fill. Shifting (rather than only moving the
-    // entry) keeps the stop distance and therefore every R-multiple intact.
+    // would compute P&L from a price we never actually traded at, so we update
+    // the entry price. We intentionally DO NOT shift the stop price or targets,
+    // because doing so would move them away from the technical invalidation levels.
     if (avgFillPrice && Number.isFinite(avgFillPrice)) {
       const shift = avgFillPrice - trade.entryPrice;
       if (Math.abs(shift) > 1e-9) {
         trade.execution.priceShift = shift;
         trade.entryPrice = avgFillPrice;
-        trade.stopPrice += shift;
-        trade.initialStopPrice += shift;
-        for (const target of trade.targets) target.price += shift;
         console.log(
-          `[execution] ${trade.asset} filled at ${avgFillPrice} vs ${trade.execution.requestedPrice} on the local feed — setup shifted by ${shift.toFixed(2)}`
+          `[execution] ${trade.asset} filled at ${avgFillPrice} vs ${trade.execution.requestedPrice} on the local feed (slippage: ${shift.toFixed(2)})`
         );
       }
     }
@@ -244,3 +295,30 @@ async function tryMirrorClose(trade: Trade, onUpdate: ExecutionUpdate): Promise<
     }
   }
 }
+
+/**
+ * Executes a partial close on Delta Exchange when a target is hit locally.
+ */
+export async function mirrorPartialCloseToDelta(trade: Trade, closeFraction: number): Promise<void> {
+  if (trade.execution?.venue !== 'DELTA' || trade.execution.status !== 'FILLED') return;
+  const totalContracts = trade.execution.contracts;
+  if (!totalContracts || totalContracts < 1) return;
+
+  const contractsToClose = Math.max(1, Math.floor(totalContracts * closeFraction));
+  if (contractsToClose < 1) return;
+
+  try {
+    await closeDeltaPosition({
+      asset: trade.asset,
+      size: contractsToClose,
+      isLong: trade.direction === 'LONG',
+    });
+    // Successfully reduced position on exchange.
+    // Update local record so the final close uses the remaining amount.
+    trade.execution.contracts -= contractsToClose;
+    console.log(\[execution] Partially closed \ contracts for \\);
+  } catch (error: any) {
+    console.error(\[execution] Partial close failed for \:\, error?.message ?? error);
+  }
+}
+

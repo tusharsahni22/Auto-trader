@@ -1,5 +1,5 @@
 import type { Candle } from "../types.js";
-import { acf1, adx, atr, atrSeries, hurstExponent, logReturns, percentileRank, realizedVolSeries, stdev } from "../lib/indicators.js";
+import { acf1, adx, atr, atrSeries, ema, hurstExponent, logReturns, percentileRank, realizedVolSeries, stdev } from "../lib/indicators.js";
 import { ALL_REGIMES, type Regime, type RegimeSnapshot } from "./types.js";
 
 /**
@@ -12,9 +12,11 @@ import { ALL_REGIMES, type Regime, type RegimeSnapshot } from "./types.js";
 
 function score(candles: Candle[]): Record<Regime, number> {
   const closes = candles.map((c) => c.close);
-  const ema20 = closes.slice(-20).reduce((a, b) => a + b, 0) / Math.min(20, closes.length);
-  const ema100Window = closes.slice(-100);
-  const ema100 = ema100Window.reduce((a, b) => a + b, 0) / ema100Window.length;
+  // FIX: Use true exponential moving averages, not simple averages.
+  // The prior code used .reduce() which is a plain SMA, causing the trend
+  // classifier to misidentify sideways markets as trending.
+  const ema20 = ema(closes, 20) ?? closes[closes.length - 1];
+  const ema100 = ema(closes, 100) ?? closes[closes.length - 1];
   const a14 = atr(candles, 14);
   const trendZ = a14 > 0 ? (ema20 - ema100) / a14 : 0;
 

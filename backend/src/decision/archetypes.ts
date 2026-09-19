@@ -1,5 +1,5 @@
 import type { Candle } from "../types.js";
-import { atr, bollingerBandwidth, rollingMax, rollingMin, sma } from "../lib/indicators.js";
+import { atr, bollingerBandwidth, ema, rollingMax, rollingMin, sma } from "../lib/indicators.js";
 import type { ArchetypeCandidate, Regime } from "./types.js";
 
 /**
@@ -143,7 +143,9 @@ function liquidationReversal(asset: string, candles: Candle[]): ArchetypeCandida
 function trendContinuation(asset: string, candles: Candle[], regime: Regime): ArchetypeCandidate | null {
   if (regime !== "TRENDING_UP" && regime !== "TRENDING_DOWN") return null;
   const closes = candles.map((c) => c.close);
-  const ema20 = sma(closes, 20);
+  // FIX: Use true EMA, not SMA. The prior code used sma() but labelled the variable ema20,
+  // meaning every EMA20 pullback trade was actually anchored to a Simple Moving Average.
+  const ema20 = ema(closes, 20);
   const a = atr(candles, 14);
   if (ema20 === null || a === 0) return null;
   const last = closes[closes.length - 1];

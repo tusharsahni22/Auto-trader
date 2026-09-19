@@ -4,9 +4,9 @@ import type { CostBreakdown } from "../decision/types.js";
 
 const TAKER_FEE = 0.0005; // 0.05%
 const MAKER_FEE = 0.0002; // 0.02%
-// Round-trip blended: 70/30 maker/taker on entry, 100% taker on stop, 85/15 on target (§5.1).
-const ENTRY_FEE = 0.7 * MAKER_FEE + 0.3 * TAKER_FEE;
-const EXIT_FEE_WIN = 0.85 * MAKER_FEE + 0.15 * TAKER_FEE;
+// The execution engine currently uses 100% MARKET orders. EV math must reflect 100% taker fees.
+const ENTRY_FEE = TAKER_FEE;
+const EXIT_FEE_WIN = TAKER_FEE;
 const EXIT_FEE_STOP = TAKER_FEE;
 
 const BASE_SLIPPAGE_BPS = 2; // §5.2 fallback — normal-conditions retail size on BTC/ETH perps

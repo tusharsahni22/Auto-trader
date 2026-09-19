@@ -6,6 +6,7 @@ import { refitCalibration } from "../decision/calibration.js";
 /** docs/07 — the learning loop, run synchronously on every trade close rather than on a monthly cadence (there is no monthly volume yet to justify batching). */
 export function onTradeClosed(trade: Trade) {
   if (trade.rMultiple === null) return;
+  if (trade.archetype === ("MANUAL" as any) || trade.bindingConstraint === "MANUAL") return;
   const win = trade.rMultiple > 0;
   recordOutcome(trade.archetype, trade.regime, win, trade.rMultiple);
   appendOutcome({ rawScore: trade.rawScore, win });

@@ -43,21 +43,24 @@ export function computeHeat(openRisks: OpenRisk[]): { heat: number; nEff: number
   return { heat, nEff };
 }
 
-export function openRiskFromTrade(t: Trade, currentPrice: number): OpenRisk {
+export function openRiskFromTrade(t: Trade, currentPrice: number, equity: number): OpenRisk {
   const dirSign = t.direction === "LONG" ? 1 : -1;
   const distanceToStop = Math.max(0, (currentPrice - t.stopPrice) * dirSign);
   const riskUsd = distanceToStop * t.remainingQuantity;
-  return { asset: t.asset, direction: t.direction, riskPctOfEquity: riskUsd };
+  // FIX: Store as a true fraction of equity (0.005 = 0.5%), not raw USD.
+  // The prior code stored raw USD here then divided by equity again inside
+  // heatBudget, causing double-normalization and meaningless heat values.
+  return { asset: t.asset, direction: t.direction, riskPctOfEquity: equity > 0 ? riskUsd / equity : 0 };
 }
 
 /** Returns the max additional risk-% the candidate can take without breaching MAX_PORTFOLIO_HEAT, or 0 if it must be vetoed. */
 export function heatBudget(existing: OpenRisk[], candidateAsset: Asset, candidateDirection: "LONG" | "SHORT", equity: number): number {
-  const normalized = existing.map((r) => ({ ...r, riskPctOfEquity: r.riskPctOfEquity / equity }));
+  // FIX: existing already holds true fractions of equity — no further normalization needed.
   let lo = 0;
   let hi = MAX_PORTFOLIO_HEAT;
   for (let i = 0; i < 30; i++) {
     const mid = (lo + hi) / 2;
-    const { heat } = computeHeat([...normalized, { asset: candidateAsset, direction: candidateDirection, riskPctOfEquity: mid }]);
+    const { heat } = computeHeat([...existing, { asset: candidateAsset, direction: candidateDirection, riskPctOfEquity: mid }]);
     if (heat > MAX_PORTFOLIO_HEAT) hi = mid;
     else lo = mid;
   }
@@ -70,9 +73,8 @@ export function correlationStackVeto(existing: OpenRisk[], candidateAsset: Asset
     (r) => correlationBetween(r.asset, candidateAsset) > 0.75 && r.direction === candidateDirection && r.asset !== candidateAsset
   );
   if (!hasCorrelatedSameDirection) return false;
-  const normalized = existing.map((r) => ({ ...r, riskPctOfEquity: r.riskPctOfEquity / equity }));
-  const probeRisk = 0.005;
-  const { heat } = computeHeat([...normalized, { asset: candidateAsset, direction: candidateDirection, riskPctOfEquity: probeRisk }]);
+  const probeRisk = 0.005; // probe with 0.5% to see if adding this would breach heat
+  const { heat } = computeHeat([...existing, { asset: candidateAsset, direction: candidateDirection, riskPctOfEquity: probeRisk }]);
   return heat > CORRELATION_STACK_HEAT_LIMIT;
 }
 
@@ -93,9 +95,15 @@ export function evaluateCircuitBreakers(
   const drawdownTripped = equity <= equityPeak * (1 - 0.1);
 
   let consecutiveLosses = 0;
+  const oneDayMs = 24 * 60 * 60 * 1000;
+  const now = Date.now();
+  
   for (let i = 0; i < recentTrades.length; i++) {
     const t = recentTrades[i];
     if (t.status !== "CLOSED" || t.rMultiple === null) break;
+    // Do not count losses older than 24h to prevent permanent deadlocks
+    if (t.exitTime && now - t.exitTime > oneDayMs) break;
+    
     if (t.rMultiple < 0) consecutiveLosses++;
     else break;
   }

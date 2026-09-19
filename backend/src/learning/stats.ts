@@ -7,6 +7,12 @@ import type { Archetype, Regime } from "../decision/types.js";
  * refit by docs/07's "learning loop" every time a trade closes (see
  * learning/recalibrate.ts). Persisted as one JSON blob in the kv store —
  * plenty for the trade volumes this MVP will ever see locally.
+ *
+ * FIX: Previously every call to getArchetypeRegimeStats() called load()
+ * which called getKv() + JSON.parse() on the full blob. This is called on
+ * every candle evaluation inside ensemble.ts -> pipeline.ts, meaning it
+ * re-parsed a growing JSON blob thousands of times per minute. Now the blob
+ * is cached in memory and only reloaded after a write.
  */
 
 export interface CellStats {
@@ -24,17 +30,27 @@ interface StatsBlob {
 
 const KEY = "learning_stats_v1";
 
+// In-memory cache — single source of truth after first load.
+let _cache: StatsBlob | null = null;
+
 function load(): StatsBlob {
+  if (_cache !== null) return _cache;
   const raw = getKv(KEY);
-  if (!raw) return { cells: {}, platt: null };
+  if (!raw) {
+    _cache = { cells: {}, platt: null };
+    return _cache;
+  }
   try {
-    return JSON.parse(raw);
+    _cache = JSON.parse(raw);
+    return _cache!;
   } catch {
-    return { cells: {}, platt: null };
+    _cache = { cells: {}, platt: null };
+    return _cache;
   }
 }
 
 function save(blob: StatsBlob) {
+  _cache = blob; // update cache before writing so readers see it immediately
   setKv(KEY, JSON.stringify(blob));
 }
 
@@ -43,8 +59,7 @@ function cellKey(archetype: Archetype, regime: Regime): string {
 }
 
 export function getArchetypeRegimeStats(archetype: Archetype, regime: Regime): CellStats | null {
-  const blob = load();
-  return blob.cells[cellKey(archetype, regime)] ?? null;
+  return load().cells[cellKey(archetype, regime)] ?? null;
 }
 
 export function recordOutcome(archetype: Archetype, regime: Regime, win: boolean, rMultiple: number) {
