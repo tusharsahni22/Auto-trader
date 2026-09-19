@@ -1,5 +1,6 @@
 import path from "node:path";
 import fs from "node:fs";
+import { fileURLToPath } from "node:url";
 import type { Trade, PnlPoint } from "./types.js";
 import { getMongoConnection, isMongoConnected } from "./db/mongodb.js";
 
@@ -11,7 +12,10 @@ import { getMongoConnection, isMongoConnected } from "./db/mongodb.js";
  * docs/06-data-and-features.md if/when ingestion grows beyond this.
  */
 
-const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), "data");
+// FIX CONFIG 4: Use script-relative path so the data directory is always found
+// regardless of which CWD Node was launched from (fixes `node backend/dist/index.js`).
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, "../../data");
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 const FILE = path.join(DATA_DIR, "trader.json");
 

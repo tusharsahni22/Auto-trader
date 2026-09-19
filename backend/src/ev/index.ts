@@ -11,7 +11,11 @@ export function computeExpectedValue(
   riskUsd: number
 ): { ev: ExpectedValue; distribution: OutcomeDistribution; modelDisagreement: boolean } {
   const stopDistPct = Math.abs(candidate.entryPrice - candidate.stopPrice) / candidate.entryPrice;
-  const costs = estimateCosts(stopDistPct, candidate.maxHoldHours / 2, fundingRatePer8h, candidate.direction);
+  // FIX: Use 35% of maxHoldHours as the expected hold duration instead of 50%.
+  // Most trades resolve at targets or stops well before the hard time-stop, so
+  // 50% was overstating funding costs and causing the G6 EV gate to veto
+  // genuinely profitable setups.
+  const costs = estimateCosts(stopDistPct, candidate.maxHoldHours * 0.35, fundingRatePer8h, candidate.direction);
 
   const monteCarlo = simulateOutcomes(candidate, calibratedWinProb);
 

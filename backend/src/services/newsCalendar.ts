@@ -6,7 +6,52 @@
  * a Mongo outage must never make the calendar hang or disappear.
  */
 
-export type EventPriority = 'LOW' | 'MEDIUM' | 'HIGH';
+// FIX: Global broadcaster so high-impact news articles can be sent as chart
+// markers to the frontend via the WebSocket bus. Set by index.ts at startup.
+type Broadcaster = (event: string, payload: unknown) => void;
+let _broadcaster: Broadcaster | null = null;
+export function setNewsCalendarBroadcaster(fn: Broadcaster) { _broadcaster = fn; }
+
+const BULLISH_WORDS = ['surge', 'rally', 'soar', 'bullish', 'breakout', 'record high', 'all-time high', 'ath', 'gain', 'jump', 'adoption', 'approve', 'approval', 'inflow', 'upgrade', 'etf approved', 'institutional'];
+const BEARISH_WORDS = ['crash', 'plunge', 'slump', 'bearish', 'sell-off', 'selloff', 'hack', 'exploit', 'ban', 'lawsuit', 'outflow', 'liquidation', 'fear', 'downgrade', 'collapse', 'bankrupt', 'fraud', 'seized'];
+
+/**
+ * Keyword-scored sentiment in [-1, 1] for a block of text.
+ * Returns positive for bullish news, negative for bearish.
+ */
+export function scoreNewsSentiment(text: string): number {
+  const lower = text.toLowerCase();
+  let score = 0;
+  for (const w of BULLISH_WORDS) if (lower.includes(w)) score += 1;
+  for (const w of BEARISH_WORDS) if (lower.includes(w)) score -= 1;
+  return Math.max(-1, Math.min(1, score));
+}
+
+/**
+ * Aggregate sentiment score across the most recent HIGH/MEDIUM crypto news
+ * for a given asset. Used by the trading pipeline as a live signal.
+ * Returns a value in [-1, 1]: positive = net bullish, negative = net bearish.
+ */
+export function getNewsSentimentScore(asset: 'BTC' | 'ETH'): number {
+  const now = Date.now();
+  const cutoff = now - 4 * 60 * 60 * 1000; // only last 4 hours
+  const relevant = [...eventStore.values()].filter(
+    (e) =>
+      e.category === 'CRYPTO' &&
+      e.isActive &&
+      (e.assets.includes(asset) || e.assets.length === 0) &&
+      new Date(e.publishedAt).getTime() >= cutoff &&
+      (e.priority === 'HIGH' || e.priority === 'MEDIUM')
+  );
+  if (relevant.length === 0) return 0;
+  const total = relevant.reduce(
+    (sum, ev) => sum + scoreNewsSentiment(ev.title + ' ' + (ev.description ?? '')),
+    0
+  );
+  return Math.max(-1, Math.min(1, total / relevant.length));
+}
+
+
 export type EventCategory = 'ECONOMIC' | 'CRYPTO' | 'REGULATORY' | 'TECHNICAL' | 'GENERAL';
 
 export interface CalendarEvent {
@@ -206,7 +251,10 @@ async function fetchCryptoNews(): Promise<NewsItem[]> {
 
   const feeds = await Promise.allSettled(
     RSS_FEEDS.map(async (feed) => {
-      const response = await fetch(feed.url, { headers: { 'User-Agent': 'auto-trader' } });
+      const response = await fetch(feed.url, {
+        headers: { 'User-Agent': 'auto-trader' },
+        signal: AbortSignal.timeout(5_000), // FIX: never block pipeline for more than 5s
+      });
       if (!response.ok) throw new Error(`${feed.name} returned ${response.status}`);
       return parseRss(await response.text(), feed.name);
     })
@@ -287,14 +335,20 @@ function storeEconomicEvents(events: EconomicCalendarEvent[]): number {
 
 function storeCryptoNews(newsItems: NewsItem[]): number {
   let stored = 0;
+  const newHighImpact: CalendarEvent[] = [];
+
   for (const item of newsItems) {
     if (Number.isNaN(item.publishedAt.getTime())) continue;
 
     const priority = classifyNewsPriority(`${item.title} ${item.body}`);
     const publishedAt = item.publishedAt.toISOString();
+    const eventId = `news_${item.id}`.replace(/[^a-zA-Z0-9_:./-]/g, '_').slice(0, 200);
+
+    // FIX: Track truly new HIGH-impact articles to broadcast as chart markers
+    const isNew = !eventStore.has(eventId);
 
     const calendarEvent: CalendarEvent = {
-      eventId: `news_${item.id}`.replace(/[^a-zA-Z0-9_:./-]/g, '_').slice(0, 200),
+      eventId,
       title: item.title,
       description: item.body.substring(0, 500),
       category: 'CRYPTO',
@@ -312,7 +366,26 @@ function storeCryptoNews(newsItems: NewsItem[]): number {
     putEvent(calendarEvent);
     void persistEvent(calendarEvent);
     stored++;
+
+    if (isNew && priority === 'HIGH') newHighImpact.push(calendarEvent);
   }
+
+  // Broadcast new high-impact articles as chart markers via the global broadcaster
+  if (newHighImpact.length > 0 && _broadcaster) {
+    for (const ev of newHighImpact) {
+      const sentiment = scoreNewsSentiment(ev.title + ' ' + (ev.description ?? ''));
+      _broadcaster('news_signal', {
+        time: new Date(ev.eventTime).getTime(),
+        title: ev.title,
+        source: ev.source,
+        url: ev.sourceUrl,
+        assets: ev.assets,
+        sentiment,          // positive = bullish, negative = bearish
+        priority: ev.priority,
+      });
+    }
+  }
+
   return stored;
 }
 

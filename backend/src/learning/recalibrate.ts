@@ -9,6 +9,6 @@ export function onTradeClosed(trade: Trade) {
   if (trade.archetype === ("MANUAL" as any) || trade.bindingConstraint === "MANUAL") return;
   const win = trade.rMultiple > 0;
   recordOutcome(trade.archetype, trade.regime, win, trade.rMultiple);
-  appendOutcome({ rawScore: trade.rawScore, win });
+  appendOutcome({ rawScore: trade.rawScore, win, tradeId: trade.id });
   refitCalibration();
 }
