@@ -124,3 +124,23 @@ export async function callChatCompletions(
   const text = data.choices[0]?.message?.content ?? "";
   return parseClaims(text, agentName);
 }
+
+export async function callGemini(apiKey: string, model: string, ctx: AgentContext, agentName: string): Promise<Claim[]> {
+  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      contents: [{ parts: [{ text: buildPrompt(ctx) }] }],
+      generationConfig: {
+        maxOutputTokens: 600,
+        temperature: 0.2,
+      },
+    }),
+  });
+  if (!res.ok) throw new Error(`Gemini API ${res.status}: ${await res.text()}`);
+  const data = (await res.json()) as { candidates?: { content?: { parts?: { text?: string }[] } }[] };
+  const text = data.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
+  return parseClaims(text, agentName);
+}

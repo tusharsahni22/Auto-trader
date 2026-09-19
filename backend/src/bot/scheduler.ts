@@ -160,9 +160,14 @@ async function executeDecision(decision: BotDecision): Promise<void> {
   const price = decision.indicators.price;
   const direction = decision.signal === "BUY" ? "LONG" : "SHORT";
   const dirSign = direction === "LONG" ? 1 : -1;
+  const atrVal = decision.indicators.atr || (price * 0.01);
 
-  const stopPrice = price - dirSign * price * config.stopLossPct;
-  const takeProfit = price + dirSign * price * config.takeProfitPct;
+  // Dynamic risk sizing based on market volatility (ATR)
+  const stopDist = 1.5 * atrVal;
+  const targetDist = 3.0 * atrVal;
+
+  const stopPrice = price - dirSign * stopDist;
+  const takeProfit = price + dirSign * targetDist;
 
   // Delta perpetuals trade in whole contracts, each worth contract_value of the
   // base asset — so risk-based sizing has to be floored to an integer lot.

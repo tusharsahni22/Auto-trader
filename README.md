@@ -43,6 +43,39 @@ calibration code downstream only ever consume `Claim[]` and have no idea whether
 human, a rule, or a model produced it — so a real LLM-based agent can be dropped
 into `decision/claims.ts` later without touching anything else.
 
+## Quick Setup
+
+1. **Clone the repository:**
+   ```bash
+   git clone <repository-url>
+   cd Auto-trader
+   ```
+
+2. **Configure Environment Variables:**
+   Copy the example environment file to `.env` and fill in your keys (e.g. Gemini, MongoDB, Delta Exchange):
+   ```bash
+   cp .env.example .env
+   ```
+   *(If you are using Docker, you can also copy `docker-compose.yml.example` to `docker-compose.yml` if needed).*
+
+3. **Install Dependencies & Run (Local):**
+   ```bash
+   # Terminal 1 - Backend
+   cd backend
+   npm install
+   npm run dev
+
+   # Terminal 2 - Frontend
+   cd frontend
+   npm install
+   npm run dev
+   ```
+
+4. **Run via Docker (Optional):**
+   ```bash
+   docker-compose up --build
+   ```
+
 ## Stack
 
 - **Backend** — Node.js + TypeScript + Express + `ws`. Live BTC/ETH candles and

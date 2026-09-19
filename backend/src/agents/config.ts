@@ -6,7 +6,7 @@
 export interface AgentConfig {
   name: string;
   enabled: boolean;
-  provider: 'openai' | 'anthropic' | 'fallback_deterministic';
+  provider: 'openai' | 'anthropic' | 'gemini' | 'gemini' | 'fallback_deterministic';
   model: string;
   temperature: number;
   weight: number; // Weight in ensemble (0-1)
@@ -14,7 +14,7 @@ export interface AgentConfig {
 }
 
 export interface ProviderConfig {
-  id: 'openai' | 'anthropic';
+  id: 'openai' | 'anthropic' | 'gemini' | 'gemini';
   apiKey: string;
   available: boolean;
   lastError?: string;
@@ -28,8 +28,8 @@ const DEFAULT_AGENTS: Record<string, AgentConfig> = {
   structure: {
     name: 'structure',
     enabled: process.env.AGENTS_ENABLED === 'true',
-    provider: process.env.OPENAI_API_KEY ? 'openai' : 'anthropic',
-    model: 'gpt-4-turbo-preview',
+    provider: process.env.GEMINI_API_KEY ? 'gemini' : (process.env.OPENAI_API_KEY ? 'openai' : 'anthropic'),
+    model: 'gemini-1.5-pro',
     temperature: 0,
     weight: 0.25,
     fallbackEnabled: true,
@@ -37,8 +37,8 @@ const DEFAULT_AGENTS: Record<string, AgentConfig> = {
   positioning: {
     name: 'positioning',
     enabled: process.env.AGENTS_ENABLED === 'true',
-    provider: process.env.OPENAI_API_KEY ? 'openai' : 'anthropic',
-    model: 'gpt-4-turbo-preview',
+    provider: process.env.GEMINI_API_KEY ? 'gemini' : (process.env.OPENAI_API_KEY ? 'openai' : 'anthropic'),
+    model: 'gemini-1.5-pro',
     temperature: 0,
     weight: 0.30,
     fallbackEnabled: true,
@@ -46,8 +46,8 @@ const DEFAULT_AGENTS: Record<string, AgentConfig> = {
   context: {
     name: 'context',
     enabled: process.env.AGENTS_ENABLED === 'true',
-    provider: process.env.ANTHROPIC_API_KEY ? 'anthropic' : 'openai',
-    model: 'claude-3-sonnet-20240229',
+    provider: process.env.GEMINI_API_KEY ? 'gemini' : (process.env.ANTHROPIC_API_KEY ? 'anthropic' : 'openai'),
+    model: 'gemini-1.5-flash',
     temperature: 0,
     weight: 0.15,
     fallbackEnabled: true,
@@ -55,8 +55,8 @@ const DEFAULT_AGENTS: Record<string, AgentConfig> = {
   adversary: {
     name: 'adversary',
     enabled: process.env.AGENTS_ENABLED === 'true',
-    provider: process.env.ANTHROPIC_API_KEY ? 'anthropic' : 'openai',
-    model: 'claude-3-sonnet-20240229',
+    provider: process.env.GEMINI_API_KEY ? 'gemini' : (process.env.ANTHROPIC_API_KEY ? 'anthropic' : 'openai'),
+    model: 'gemini-1.5-flash',
     temperature: 0.3, // Higher temperature for creative adversarial thinking
     weight: 0.30,
     fallbackEnabled: true,
@@ -82,6 +82,11 @@ let providerStates: Record<string, ProviderConfig> = {
     apiKey: process.env.ANTHROPIC_API_KEY || '',
     available: Boolean(process.env.ANTHROPIC_API_KEY),
   },
+  gemini: {
+    id: 'gemini',
+    apiKey: process.env.GEMINI_API_KEY || '',
+    available: Boolean(process.env.GEMINI_API_KEY),
+  }
 };
 
 /**
@@ -176,7 +181,7 @@ export function getProviderStates(): Record<string, ProviderConfig> {
  * Update provider availability
  */
 export function updateProviderState(
-  providerId: 'openai' | 'anthropic',
+  providerId: 'openai' | 'anthropic' | 'gemini',
   updates: Partial<ProviderConfig>
 ): void {
   providerStates[providerId] = {
@@ -200,7 +205,7 @@ export function updateProviderState(
 /**
  * Check provider availability by making a test call
  */
-export async function checkProviderAvailability(providerId: 'openai' | 'anthropic'): Promise<boolean> {
+export async function checkProviderAvailability(providerId: 'openai' | 'anthropic' | 'gemini'): Promise<boolean> {
   const provider = providerStates[providerId];
 
   if (!provider.apiKey) {
@@ -228,7 +233,7 @@ export async function checkProviderAvailability(providerId: 'openai' | 'anthropi
 /**
  * Get fallback provider for an agent
  */
-export function getFallbackProvider(agent: AgentConfig): 'openai' | 'anthropic' | 'fallback_deterministic' {
+export function getFallbackProvider(agent: AgentConfig): 'openai' | 'anthropic' | 'gemini' | 'fallback_deterministic' {
   if (!agent.fallbackEnabled) {
     return 'fallback_deterministic';
   }
@@ -248,7 +253,7 @@ export function getFallbackProvider(agent: AgentConfig): 'openai' | 'anthropic' 
  */
 export function shouldRunAgent(agentName: string): {
   shouldRun: boolean;
-  provider: 'openai' | 'anthropic' | 'fallback_deterministic';
+  provider: 'openai' | 'anthropic' | 'gemini' | 'fallback_deterministic';
   reason?: string;
 } {
   const agent = agentConfigs[agentName];

@@ -1,0 +1,54 @@
+services:
+  backend:
+    image: ${DOCKERHUB_IMAGE:-tusharsahni22/auto-trader}:${BACKEND_TAG:-backend-latest}
+    ports:
+      - "${BACKEND_PORT:-4000}:4000"
+    environment:
+      NODE_ENV: production
+      PORT: 4000
+      DATA_DIR: /app/data
+      STARTING_EQUITY: ${STARTING_EQUITY:-10000}
+      MONGODB_URI: ${MONGODB_URI:-}
+      COINGECKO_API_KEY: ${COINGECKO_API_KEY:-}
+      CRYPTOCOMPARE_API_KEY: ${CRYPTOCOMPARE_API_KEY:-}
+      ECONOMIC_CALENDAR_API_KEY: ${ECONOMIC_CALENDAR_API_KEY:-}
+      DELTA_EXCHANGE_API_KEY: ${DELTA_EXCHANGE_API_KEY:-}
+      DELTA_EXCHANGE_API_SECRET: ${DELTA_EXCHANGE_API_SECRET:-}
+      DELTA_EXCHANGE_BASE_URL: ${DELTA_EXCHANGE_BASE_URL:-}
+      LIVE_TRADING: ${LIVE_TRADING:-false}
+      DELTA_EXECUTION_MAX_RETRIES: ${DELTA_EXECUTION_MAX_RETRIES:-5}
+      NEWS_ENABLED: ${NEWS_ENABLED:-true}
+      NEWS_BLACKOUT_MIN: ${NEWS_BLACKOUT_MIN:-15}
+      NEWS_CURRENCIES: ${NEWS_CURRENCIES:-USD,EUR,GBP,JPY,CNY}
+      NEWS_REFRESH_SEC: ${NEWS_REFRESH_SEC:-180}
+      NEWS_CALENDAR_REFRESH_SEC: ${NEWS_CALENDAR_REFRESH_SEC:-21600}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      AGENTS_ENABLED: ${AGENTS_ENABLED:-false}
+      ENGINE_INSTANCE_ID: ${ENGINE_INSTANCE_ID:-local}
+      ENGINE_LEADER_ID: ${ENGINE_LEADER_ID:-domain}
+      LEDGER_MIGRATE_LOCAL_FILE: ${LEDGER_MIGRATE_LOCAL_FILE:-false}
+    volumes:
+      - trader_data:/app/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:4000/health').then(r => { if (!r.ok) process.exit(1) }).catch(() => process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+  frontend:
+    image: ${DOCKERHUB_IMAGE:-tusharsahni22/auto-trader}:${FRONTEND_TAG:-frontend-latest}
+    ports:
+      - "${FRONTEND_PORT:-5173}:5173"
+    environment:
+      NODE_ENV: production
+      VITE_API_PROXY: http://backend:4000
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  trader_data:
