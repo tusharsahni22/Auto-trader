@@ -52,6 +52,7 @@ export function getNewsSentimentScore(asset: 'BTC' | 'ETH'): number {
 }
 
 
+export type EventPriority = 'LOW' | 'MEDIUM' | 'HIGH';
 export type EventCategory = 'ECONOMIC' | 'CRYPTO' | 'REGULATORY' | 'TECHNICAL' | 'GENERAL';
 
 export interface CalendarEvent {

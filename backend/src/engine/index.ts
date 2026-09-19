@@ -5,7 +5,7 @@ import { addEquityPoint, getEquityCurve, getKv, getTrades, refreshLedger, releas
 import { runPipeline, scoreCandidate, type PipelineOutput } from "../decision/pipeline.js";
 import { classifyRegime } from "../decision/regime.js";
 import { detectArchetypes } from "../decision/archetypes.js";
-import { atr } from "../lib/indicators.js";
+import { atr as _computeAtr } from "../lib/indicators.js";
 import type { ArchetypeCandidate } from "../decision/types.js";
 import { applyExchangeClose, finalizeClose, manageTrade } from "../lifecycle/manager.js";
 import { onTradeClosed } from "../learning/recalibrate.js";
@@ -338,12 +338,17 @@ function openTrade(asset: Asset, trade: Trade) {
 
 function tryOpenPosition(asset: Asset) {
   if (!state.running) return;
-  maybeBroadcastHeartbeat(asset);
   const perAssetOpen = [...openTrades.values()].filter((t) => t.asset === asset).length;
   if (perAssetOpen >= MAX_POSITIONS_PER_ASSET) return;
   if (openTrades.size >= MAX_CONCURRENT_POSITIONS) return;
 
   const candles = getCandles(asset, INTERVAL);
+
+  // Cache ATR for the mid-candle momentum spike detector
+  if (candles.length >= 15) {
+    lastKnownAtr.set(asset, _computeAtr(candles, 14));
+  }
+
   const existingOpenRisk = getOpenRiskExcept(asset);
   const tripped = circuitBreakerTripped();
   const out = runPipeline(asset, candles, state.equity, existingOpenRisk, tripped, Date.now());
@@ -375,7 +380,7 @@ export function forceOpenTrade(asset: Asset, direction: Direction = "LONG"): { o
     return { ok: false, error: "Not enough market data yet" };
   }
 
-  const a = atr(candles, 14) || price * 0.005;
+  const a = _computeAtr(candles, 14) || price * 0.005;
   const stopDist = 1.5 * a;
   const dirSign = direction === "LONG" ? 1 : -1;
   const candidate: ArchetypeCandidate = {
@@ -680,6 +685,8 @@ export async function reconcileDeltaPositions() {
 
 let initialized = false;
 const lastEvaluatedCandle = new Map<string, number>();
+const lastMidCandleEval = new Map<string, number>();
+const lastKnownAtr = new Map<string, number>();
 
 export async function initEngine() {
   if (initialized) return;
@@ -728,12 +735,32 @@ export async function initEngine() {
 
     manageOpenTrades(asset);
 
+    if (state.running) {
+      maybeBroadcastHeartbeat(asset);
+    }
+
     // Throttle CPU-heavy pipeline evaluation to candle close
     if (candles.length > 1) {
       const currentCandleTime = candles[candles.length - 1].time;
       if (lastEvaluatedCandle.get(asset) !== currentCandleTime) {
         lastEvaluatedCandle.set(asset, currentCandleTime);
         tryOpenPosition(asset);
+      } else {
+        // Mid-candle re-evaluation: if price moves > 1.5 ATR from the
+        // current candle's open, a breakout or flush is happening NOW.
+        // Re-run the pipeline to catch it instead of waiting 15 minutes.
+        const currentCandle = candles[candles.length - 1];
+        const candleAtr = lastKnownAtr.get(asset) ?? 0;
+        if (candleAtr > 0) {
+          const moveFromOpen = Math.abs(currentPrice - currentCandle.open);
+          const lastMidEval = lastMidCandleEval.get(asset) ?? 0;
+          const now = Date.now();
+          // At most once per 60 seconds to avoid CPU thrashing
+          if (moveFromOpen > candleAtr * 1.5 && now - lastMidEval > 60_000) {
+            lastMidCandleEval.set(asset, now);
+            tryOpenPosition(asset);
+          }
+        }
       }
     }
 

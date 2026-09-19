@@ -85,7 +85,7 @@ async function tryMirrorOpen(trade: Trade, onUpdate: ExecutionUpdate): Promise<v
     if (stopCrossed || slippedTooFar) {
       const reason = stopCrossed ? `crossed the stop ${trade.stopPrice}` : "slipped too far from entry";
       trade.execution = {
-        ...trade.execution,
+        ...trade.execution, venue: trade.execution?.venue ?? "SIMULATED",
         status: "REJECTED",
         error: `Retry cancelled: current price ${mark} has ${reason}`,
         currentRiskUsd: currentRiskUsd(trade, mark),
@@ -97,7 +97,7 @@ async function tryMirrorOpen(trade: Trade, onUpdate: ExecutionUpdate): Promise<v
     // The market order has no limit price. This records the latest price used
     // for risk reporting; entry/targets are shifted only after a real fill.
     trade.execution = {
-      ...trade.execution,
+      ...trade.execution, venue: trade.execution?.venue ?? "SIMULATED",
       status: "PENDING",
       requestedPrice: mark,
       retryAt: undefined,
@@ -260,7 +260,7 @@ async function tryMirrorClose(trade: Trade, onUpdate: ExecutionUpdate): Promise<
     });
 
     trade.execution = {
-      ...trade.execution,
+      ...trade.execution, venue: trade.execution?.venue ?? "SIMULATED",
       status: "CLOSED",
       closeOrderId: order?.id != null ? String(order.id) : undefined,
       closeFillPrice: order?.average_fill_price != null ? Number(order.average_fill_price) : undefined,
@@ -271,7 +271,7 @@ async function tryMirrorClose(trade: Trade, onUpdate: ExecutionUpdate): Promise<
     onUpdate(trade);
   } catch (error: any) {
     trade.execution = {
-      ...trade.execution,
+      ...trade.execution, venue: trade.execution?.venue ?? "SIMULATED",
       status: "CLOSE_FAILED",
       error: error?.message ?? String(error),
     };
@@ -315,10 +315,11 @@ export async function mirrorPartialCloseToDelta(trade: Trade, closeFraction: num
     });
     // Successfully reduced position on exchange.
     // Update local record so the final close uses the remaining amount.
-    trade.execution.contracts -= contractsToClose;
-    console.log(\[execution] Partially closed \ contracts for \\);
+    trade.execution.contracts = (trade.execution.contracts ?? 0) - contractsToClose;
+    console.log(`[execution] Partially closed ${contractsToClose} contracts for ${trade.asset}`);
   } catch (error: any) {
-    console.error(\[execution] Partial close failed for \:\, error?.message ?? error);
+    console.error(`[execution] Partial close failed for ${trade.asset}:`, error?.message ?? error);
   }
 }
+
 

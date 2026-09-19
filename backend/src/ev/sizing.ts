@@ -92,6 +92,16 @@ export function computeSizing(inputs: SizingInputs): Sizing {
     haircuts.push("LOW_REGIME_CONFIDENCE");
   }
 
+  // FIX: Cap the total haircut damage — stacking 5 multiplicative haircuts
+  // (0.6 × 0.65 × 0.5 × 0.5 × 0.7 = 0.068) can destroy sizing even when
+  // the underlying edge is real. Floor at 40% of quarter-Kelly.
+  const quarterKelly = 0.25 * kellyFraction;
+  const haircutFloor = quarterKelly * 0.40;
+  if (appliedFraction < haircutFloor && quarterKelly > 0) {
+    appliedFraction = haircutFloor;
+    haircuts.push("HAIRCUT_FLOOR_APPLIED");
+  }
+
   const stopDistPct = Math.abs(inputs.entryPrice - inputs.stopPrice) / inputs.entryPrice;
   const volTargetCap = stopDistPct > 0 ? TARGET_DAILY_VOL_CONTRIBUTION / stopDistPct : MAX_RISK_PER_TRADE;
 

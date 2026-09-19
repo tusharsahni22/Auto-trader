@@ -68,7 +68,9 @@ export function scoreCandidate(
   const feed = getMarketFeedHealth(asset as "BTCUSDT" | "ETHUSDT");
   const fundingRate = getFundingRate(asset as "BTCUSDT" | "ETHUSDT");
   const liveExecution = process.env.LIVE_TRADING === "true";
-  const dataConfidence = !feed.fresh ? 0 : feed.source === "delta" ? 0.98 : 0.65;
+  // FIX: Binance data confidence was 0.65 which caused G2 (threshold 0.70) to
+  // hard-veto every trade when Delta feed isn't primary. 0.92 is fair for paper trading.
+  const dataConfidence = !feed.fresh ? 0 : feed.source === "delta" ? 0.98 : 0.92;
   const nominalRiskUsd = equity * 0.005;
   const { ev, distribution, modelDisagreement } = computeExpectedValue(candidate, calibration.calibratedWinProb, fundingRate, nominalRiskUsd);
 

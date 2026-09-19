@@ -54,7 +54,11 @@ export function evaluateGates(ctx: GateContext): GateResult {
 
   const b = ctx.candidate.targets[ctx.candidate.targets.length - 1]?.r ?? 2;
   const breakevenP = 1 / (1 + b);
-  if (ctx.calibration.calibratedWinProb < breakevenP + 0.05) {
+  // FIX: In cold start (A_UNCALIBRATED), require only 2% edge above breakeven
+  // instead of 5%. The engine needs trades to build calibration data — without
+  // trades there's no data, without data calibration stays cold forever.
+  const edgeMargin = ctx.calibration.stage === "A_UNCALIBRATED" ? 0.02 : 0.05;
+  if (ctx.calibration.calibratedWinProb < breakevenP + edgeMargin) {
     return { passed: false, downgradeToWatch: false, reasons: ["G5_INSUFFICIENT_EDGE"], heatBudgetPct: 0 };
   }
 
