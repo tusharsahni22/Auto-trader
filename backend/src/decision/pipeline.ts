@@ -24,6 +24,17 @@ import { explainReason } from "./explain.js";
 
 const MIN_RISK_PER_TRADE = 0.001; // mirrors ev/sizing.ts's floor
 
+/**
+ * Setups that lost money net of costs in a 60-day backtest (15m BTC/ETH). They are still
+ * detected, logged and shadow-tracked so calibration keeps collecting data, but not traded.
+ * Override with DISABLED_SETUPS="ARCHETYPE:DIRECTION,..." (empty string re-enables everything).
+ */
+const DEFAULT_DISABLED_SETUPS = "RSI_DIVERGENCE:SHORT,TREND_CONTINUATION:SHORT,RANGE_MEAN_REVERSION:SHORT";
+function isSetupDisabled(archetype: string, direction: string): boolean {
+  const list = (process.env.DISABLED_SETUPS ?? DEFAULT_DISABLED_SETUPS).split(",").map((s) => s.trim()).filter(Boolean);
+  return list.includes(`${archetype}:${direction}`);
+}
+
 export interface PipelineOutput {
   decision: "OPEN" | "WATCH" | "VETO" | "NONE";
   asset: string;
@@ -120,6 +131,9 @@ export function scoreCandidate(
     entryClusterStrengths,
   };
 
+  if (!options.bypassGatesAndForceSize && isSetupDisabled(candidate.archetype, candidate.direction)) {
+    return { ...base, decision: "VETO", vetoReasons: ["SETUP_DISABLED"] };
+  }
   if (liveExecution && false) {
     return { ...base, decision: "VETO", vetoReasons: ["DELTA_FEED_REQUIRED", `FEED_SOURCE_${feed.source.toUpperCase()}`] };
   }

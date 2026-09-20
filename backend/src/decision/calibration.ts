@@ -49,9 +49,12 @@ export function refitCalibration() {
 }
 
 /** Beta(k+0.5, n-k+0.5) posterior mean and an approximate 90% CI via a normal approximation. */
+// Prior strength: a small cell (e.g. 2 wins from 2 trades) is pulled toward 50% instead of jumping to 83%.
+const PRIOR_STRENGTH = 20;
+
 function betaPosterior(wins: number, n: number): { mean: number; ci90: [number, number] } {
-  const alpha = wins + 0.5;
-  const beta = n - wins + 0.5;
+  const alpha = wins + PRIOR_STRENGTH / 2;
+  const beta = n - wins + PRIOR_STRENGTH / 2;
   const mean = alpha / (alpha + beta);
   const variance = (alpha * beta) / ((alpha + beta) ** 2 * (alpha + beta + 1));
   const sd = Math.sqrt(variance);

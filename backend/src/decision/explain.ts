@@ -32,6 +32,9 @@ export function explainReason(code: string, out: PipelineOutput): string {
       : "";
     return `Expected profit after costs is ${r2(out.evNetR ?? 0)}R, below the 0.15R minimum.${costText}`;
   }
+  if (code === "SETUP_DISABLED") {
+    return `${c?.archetype.replaceAll("_", " ")} ${c?.direction} lost money after costs in a 60-day backtest, so it is tracked but not traded. It is still followed as a shadow trade; edit DISABLED_SETUPS to re-enable.`;
+  }
   if (code === "G8_PORTFOLIO_HEAT") return "Total open risk is already at the portfolio limit (1.5% of equity).";
   if (code === "G9_CORRELATION_STACK") return "BTC and ETH move together; a same-direction trade is already open and adding this one would exceed the 1% correlated-risk limit.";
   if (code === "G12_CIRCUIT_BREAKER") return "Trading is paused: daily loss, drawdown or losing-streak limit was hit.";

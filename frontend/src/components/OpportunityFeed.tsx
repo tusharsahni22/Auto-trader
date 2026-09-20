@@ -22,6 +22,7 @@ const REASON_LABEL: Record<string, string> = {
   DATA_STALE: "Market data stale",
   EVENT_BLACKOUT: "Major news event blackout",
   MIN_RISK_NOT_MET: "Trade size too small",
+  SETUP_DISABLED: "Setup paused (unprofitable in backtest)",
 };
 
 export default function OpportunityFeed({ opportunities }: { opportunities: Opportunity[] }) {

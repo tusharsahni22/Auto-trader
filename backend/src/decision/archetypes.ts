@@ -413,8 +413,11 @@ function rangeMeanReversion(asset: string, candles: Candle[], regime: Regime): A
     const stopDist = last - stop;
     if (stopDist <= 0) return null;
     const midRange = (rangeHigh + rangeLow) / 2;
+    // Second target sits 5% of the RANGE below the far edge (it was 5% of price, which lands on the wrong side of entry).
+    const tp2Price = rangeHigh - rangeSize * 0.05;
     const tp1R = (midRange - last) / stopDist;
-    const tp2R = (rangeHigh * 0.95 - last) / stopDist;
+    const tp2R = (tp2Price - last) / stopDist;
+    if (tp2R < 1.0) return null; // not enough room to be worth the costs
     return {
       archetype: "RANGE_MEAN_REVERSION",
       direction: "LONG",
@@ -422,8 +425,8 @@ function rangeMeanReversion(asset: string, candles: Candle[], regime: Regime): A
       entryPrice: last,
       stopPrice: stop,
       targets: [
-        { price: midRange, fraction: 0.5, r: Math.max(0.8, tp1R) },
-        { price: rangeHigh * 0.95, fraction: 0.5, r: Math.max(1.5, tp2R) },
+        { price: midRange, fraction: 0.5, r: tp1R },
+        { price: tp2Price, fraction: 0.5, r: tp2R },
       ],
       maxHoldHours: 48,
       structuralReason: `Near range bottom (${(positionInRange * 100).toFixed(0)}% of range ${rangeLow.toFixed(2)}–${rangeHigh.toFixed(2)}), RSI ${currentRsi?.toFixed(1) ?? 'N/A'} oversold`,
@@ -437,8 +440,10 @@ function rangeMeanReversion(asset: string, candles: Candle[], regime: Regime): A
     const stopDist = stop - last;
     if (stopDist <= 0) return null;
     const midRange = (rangeHigh + rangeLow) / 2;
+    const tp2Price = rangeLow + rangeSize * 0.05;
     const tp1R = (last - midRange) / stopDist;
-    const tp2R = (last - rangeLow * 1.05) / stopDist;
+    const tp2R = (last - tp2Price) / stopDist;
+    if (tp2R < 1.0) return null;
     return {
       archetype: "RANGE_MEAN_REVERSION",
       direction: "SHORT",
@@ -446,8 +451,8 @@ function rangeMeanReversion(asset: string, candles: Candle[], regime: Regime): A
       entryPrice: last,
       stopPrice: stop,
       targets: [
-        { price: midRange, fraction: 0.5, r: Math.max(0.8, tp1R) },
-        { price: rangeLow * 1.05, fraction: 0.5, r: Math.max(1.5, tp2R) },
+        { price: midRange, fraction: 0.5, r: tp1R },
+        { price: tp2Price, fraction: 0.5, r: tp2R },
       ],
       maxHoldHours: 48,
       structuralReason: `Near range top (${(positionInRange * 100).toFixed(0)}% of range ${rangeLow.toFixed(2)}–${rangeHigh.toFixed(2)}), RSI ${currentRsi?.toFixed(1) ?? 'N/A'} overbought`,

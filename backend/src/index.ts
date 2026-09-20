@@ -4,7 +4,7 @@ import cors from "cors";
 import http from "node:http";
 import { WebSocketServer, WebSocket } from "ws";
 import { api } from "./routes/api.js";
-import { initEngine, reloadPersistedState, setBroadcaster, stopEngine } from "./engine/index.js";
+import { initEngine, reloadPersistedState, pauseEngineForShutdown, resumeEngineIfWasRunning, setBroadcaster } from "./engine/index.js";
 import { initializeLedger } from "./db.js";
 import { startNewsCalendarUpdates, setNewsCalendarBroadcaster } from "./services/newsCalendar.js";
 import { setBotBroadcaster } from "./bot/scheduler.js";
@@ -109,13 +109,17 @@ server.listen(PORT, async () => {
 
   startNewsCalendarUpdates();
   await initEngine();
-  console.log("[server] engine initialized (stopped — call /api/engine/start)");
+  if (await resumeEngineIfWasRunning()) {
+    console.log("[server] engine initialized and started automatically (set AUTO_START_ENGINE=false to disable)");
+  } else {
+    console.log("[server] engine initialized (stopped — call /api/engine/start)");
+  }
 });
 
 // FIX CONFIG 2 (graceful shutdown): Cancel pending exchange orders before exit
 async function shutdown(signal: string) {
   console.log(`\n[server] ${signal} received — shutting down gracefully`);
-  stopEngine();
+  pauseEngineForShutdown();
   // Give open limit orders a moment to be cancelled via the execution layer
   await new Promise((r) => setTimeout(r, 1500));
   server.close(() => {

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Asset, Direction, EngineState, Trade, VetoedOpportunity } from "../types.js";
 import { getCandles, getLastPrice, onPrice, startMarketData } from "../marketData.js";
-import { addEquityPoint, getEquityCurve, getKv, getTrades, refreshLedger, releaseEngineLease, setKv, upsertTrade } from "../db.js";
+import { acquireEngineLease, addEquityPoint, getEquityCurve, getKv, getTrades, refreshLedger, releaseEngineLease, setKv, upsertTrade } from "../db.js";
 import { runPipeline, scoreCandidate, type PipelineOutput } from "../decision/pipeline.js";
 import { classifyRegime } from "../decision/regime.js";
 import { detectArchetypes } from "../decision/archetypes.js";
@@ -9,6 +9,7 @@ import { atr as _computeAtr } from "../lib/indicators.js";
 import type { ArchetypeCandidate } from "../decision/types.js";
 import { applyExchangeClose, finalizeClose, manageTrade } from "../lifecycle/manager.js";
 import { onTradeClosed } from "../learning/recalibrate.js";
+import { openShadow, updateShadows, getShadowSummary } from "../learning/shadow.js";
 import { evaluateCircuitBreakers, openRiskFromTrade, type OpenRisk } from "../risk/portfolio.js";
 
 const ASSETS: Asset[] = ["BTCUSDT", "ETHUSDT"];
@@ -341,6 +342,9 @@ function openTrade(asset: Asset, trade: Trade) {
   })();
 }
 
+const SETUP_COOLDOWN_MS = Number(process.env.SETUP_COOLDOWN_MIN ?? 60) * 60_000;
+const lastSetupAt = new Map<string, number>();
+
 function tryOpenPosition(asset: Asset) {
   if (!state.running) return;
   const perAssetOpen = [...openTrades.values()].filter((t) => t.asset === asset).length;
@@ -358,9 +362,23 @@ function tryOpenPosition(asset: Asset) {
   const tripped = circuitBreakerTripped();
   const out = runPipeline(asset, candles, state.equity, existingOpenRisk, tripped, Date.now());
 
+  // Cooldown: a setup usually persists across several consecutive candles. Log/shadow/open it once
+  // per cooldown window instead of on every bar (which spams the feed and double-counts outcomes).
+  if (out.candidate) {
+    const setupKey = `${asset}|${out.candidate.archetype}|${out.candidate.direction}`;
+    const key = out.decision === "OPEN" ? setupKey : `${setupKey}|${out.decision}`;
+    const now = Date.now();
+    if (now - (lastSetupAt.get(key) ?? 0) < SETUP_COOLDOWN_MS) return;
+    lastSetupAt.set(key, now);
+  }
+
   logOpportunity(asset, out.decision, out);
 
-  if (out.decision !== "OPEN" || !out.candidate || !out.sizing) return;
+  if (out.decision !== "OPEN") {
+    if (out.candidate) openShadow(asset, out, candles);
+    return;
+  }
+  if (!out.candidate || !out.sizing) return;
   openTrade(asset, buildTradeFromOpportunity(asset, out));
 }
 
@@ -750,6 +768,7 @@ export async function initEngine() {
       const currentCandleTime = candles[candles.length - 1].time;
       if (lastEvaluatedCandle.get(asset) !== currentCandleTime) {
         lastEvaluatedCandle.set(asset, currentCandleTime);
+        updateShadows(asset, candles);
         tryOpenPosition(asset);
       } else {
         // Mid-candle re-evaluation: if price moves > 1.5 ATR from the
@@ -774,12 +793,31 @@ export async function initEngine() {
   });
 }
 
+/**
+ * The dev server restarts on every code change and used to boot with the engine stopped, so it
+ * never scanned until Start was pressed again. Start on every boot unless AUTO_START_ENGINE=false.
+ * (With LIVE_TRADING=true this also means orders go to Delta automatically after a restart.)
+ */
+export async function resumeEngineIfWasRunning(): Promise<boolean> {
+  if (process.env.AUTO_START_ENGINE === "false") return false;
+  const lease = await acquireEngineLease();
+  if (!lease.ok) return false;
+  startEngine();
+  return true;
+}
+
 export function startEngine() {
   state.running = true;
   state.startedAt = Date.now();
   setKv("engineRunning", "true");
   setKv("engineStartedAt", String(state.startedAt));
   broadcast("engine_state", state);
+}
+
+/** Stops scanning for a process shutdown/restart but keeps the persisted "running" flag so the next boot resumes. */
+export function pauseEngineForShutdown() {
+  state.running = false;
+  void releaseEngineLease().catch((error) => console.error("[engine] lease release failed:", error));
 }
 
 export function stopEngine() {
@@ -802,6 +840,8 @@ export function getAssets(): Asset[] {
 export function getInterval(): string {
   return INTERVAL;
 }
+
+export { getShadowSummary };
 
 export function getRecentOpportunities() {
   return recentOpportunities;

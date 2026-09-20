@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { getCandles, getFundingRate } from "../marketData.js";
-import { closeTradeManually, forceOpenTrade, getAssets, getBalanceInfo, getEngineState, getEquityCurve, getInterval, getLastScans, getOpenPositions, getRecentOpportunities, getSharedEngineState, reconcileDeltaPositions, startEngine, stopEngine, syncEngineFromLedger, updateTradeStop } from "../engine/index.js";
+import { closeTradeManually, forceOpenTrade, getAssets, getBalanceInfo, getEngineState, getEquityCurve, getInterval, getLastScans, getOpenPositions, getRecentOpportunities, getShadowSummary, getSharedEngineState, reconcileDeltaPositions, startEngine, stopEngine, syncEngineFromLedger, updateTradeStop } from "../engine/index.js";
 import { getEngineRole, getTrades, refreshLedger } from "../db.js";
 import { classifyRegime } from "../decision/regime.js";
 import { getAllCellStats, getPlattParams } from "../learning/stats.js";
@@ -149,6 +149,10 @@ api.get("/equity-curve", async (_req, res) => {
 
 api.get("/balance", async (_req, res) => {
   res.json(await getBalanceInfo());
+});
+
+api.get("/shadow", (_req, res) => {
+  res.json(getShadowSummary());
 });
 
 api.get("/opportunities", (_req, res) => {

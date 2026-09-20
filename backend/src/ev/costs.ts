@@ -4,8 +4,9 @@ import type { CostBreakdown } from "../decision/types.js";
 
 const TAKER_FEE = 0.0005; // 0.05%
 const MAKER_FEE = 0.0002; // 0.02%
-// The execution engine currently uses 100% MARKET orders. EV math must reflect 100% taker fees.
-const ENTRY_FEE = TAKER_FEE;
+// Entries are limit orders placed at the mark: they fill as maker when they rest and as taker
+// when they cross the spread, so use the midpoint. Exits (stops, targets) are market orders.
+const ENTRY_FEE = (MAKER_FEE + TAKER_FEE) / 2;
 const EXIT_FEE_WIN = TAKER_FEE;
 const EXIT_FEE_STOP = TAKER_FEE;
 
