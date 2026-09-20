@@ -31,11 +31,31 @@ export default function OpportunityFeed({ opportunities }: { opportunities: Oppo
             </div>
             {o.vetoReasons.length > 0 && (
               <div className="mt-1 flex flex-wrap gap-1">
-                {o.vetoReasons.map((r) => (
-                  <span key={r} className="rounded bg-bg-border px-1 py-0.5 text-[10px] text-ink-faint">
-                    {r}
-                  </span>
-                ))}
+                {o.vetoReasons.map((r) => {
+                  let text = r;
+                  if (r === "G1_ARCHETYPE_REGIME_VETO") text = "Market trend opposes pattern";
+                  else if (r === "G2_DATA_CONFIDENCE") text = "Data feed unreliable";
+                  else if (r === "G3_UNVERIFIED_EVIDENCE") text = "Unverified signals";
+                  else if (r === "G4_CONFLICT") text = "Conflicting signals";
+                  else if (r === "G5_INSUFFICIENT_EDGE") text = "Win probability too low";
+                  else if (r === "G6_NEGATIVE_NET_EV") text = "Fees eat all profits";
+                  else if (r === "G8_PORTFOLIO_HEAT") text = "Risk limit reached";
+                  else if (r === "G9_CORRELATION_STACK") text = "Correlated trade already open";
+                  else if (r === "G11_STALE_CALIBRATION_SIZE_CAPPED") text = "Needs calibration";
+                  else if (r === "G12_CIRCUIT_BREAKER") text = "Circuit breaker tripped";
+                  else if (r === "DELTA_FEED_REQUIRED") text = "Delta data required for live trading";
+                  else if (r === "DATA_STALE") text = "Market data stale";
+                  else if (r === "EVENT_BLACKOUT") text = "Major news event blackout";
+                  else if (r === "MIN_RISK_NOT_MET") text = "Trade size too small";
+                  else if (r.startsWith("EXTREME_FUNDING")) text = `Extreme funding fee: ${(Number(r.split("_")[2]) * 100).toFixed(2)}%`;
+                  else if (r.startsWith("FEED_SOURCE")) return null; // hide this redundant tag
+
+                  return (
+                    <span key={r} className="rounded bg-bg-border px-1.5 py-0.5 text-[10px] font-medium text-bear-soft">
+                      {text}
+                    </span>
+                  );
+                })}
               </div>
             )}
           </div>

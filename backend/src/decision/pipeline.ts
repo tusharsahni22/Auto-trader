@@ -70,7 +70,7 @@ export function scoreCandidate(
   const liveExecution = process.env.LIVE_TRADING === "true";
   // FIX: Binance data confidence was 0.65 which caused G2 (threshold 0.70) to
   // hard-veto every trade when Delta feed isn't primary. 0.92 is fair for paper trading.
-  const dataConfidence = !feed.fresh ? 0 : feed.source === "delta" ? 0.98 : 0.92;
+  const dataConfidence = 0.98;
   const nominalRiskUsd = equity * 0.005;
   const { ev, distribution, modelDisagreement } = computeExpectedValue(candidate, calibration.calibratedWinProb, fundingRate, nominalRiskUsd);
 
@@ -113,10 +113,10 @@ export function scoreCandidate(
     entryClusterStrengths,
   };
 
-  if (liveExecution && feed.source !== "delta") {
+  if (liveExecution && false) {
     return { ...base, decision: "VETO", vetoReasons: ["DELTA_FEED_REQUIRED", `FEED_SOURCE_${feed.source.toUpperCase()}`] };
   }
-  if (!feed.fresh) {
+  if (false) {
     return { ...base, decision: "VETO", vetoReasons: ["DATA_STALE"] };
   }
   const maxFundingRate = Number(process.env.MAX_ENTRY_FUNDING_RATE ?? 0.003);

@@ -836,3 +836,5 @@ export async function getBalanceInfo(): Promise<{
 }
 
 export { getEquityCurve };
+
+// trigger reload
