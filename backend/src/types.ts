@@ -124,8 +124,15 @@ export interface VetoedOpportunity {
   archetype: Archetype;
   regime: Regime;
   vetoReasons: string[];
+  /** Plain-language explanation per veto reason (same order as vetoReasons). */
+  vetoDetails?: string[];
+  /** Why the setup was detected/tracked (the detector's structural rationale). */
+  setupReason?: string;
+  entryPrice?: number;
+  stopPrice?: number;
   calibratedWinProb: number;
   evNetR: number;
+  costR?: number;
 }
 
 export interface EngineState {

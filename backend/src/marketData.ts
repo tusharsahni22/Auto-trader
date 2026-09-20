@@ -76,9 +76,11 @@ async function refreshFundingRate(asset: Asset) {
   try {
     const { getDeltaTicker, assetToDeltaSymbol } = await import("./services/deltaExchange.js");
     const deltaTicker = await getDeltaTicker(assetToDeltaSymbol(asset));
-    const deltaFunding = Number(deltaTicker?.funding_rate ?? deltaTicker?.funding_rate_8h);
-    if (Number.isFinite(deltaFunding)) {
-      fundingRate.set(asset, deltaFunding);
+    // Delta reports funding_rate in percent (0.01 = 0.01% per 8h); the rest of the
+    // system (and Binance's field) uses fractions, so convert here.
+    const deltaFundingPct = Number(deltaTicker?.funding_rate ?? deltaTicker?.funding_rate_8h);
+    if (Number.isFinite(deltaFundingPct)) {
+      fundingRate.set(asset, deltaFundingPct / 100);
       return;
     }
   } catch {

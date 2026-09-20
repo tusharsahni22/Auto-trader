@@ -208,8 +208,13 @@ function logOpportunity(asset: Asset, decision: string, out: ReturnType<typeof r
     archetype: out.candidate?.archetype ?? "COMPRESSION_BREAKOUT",
     regime: out.regime.label,
     vetoReasons: out.vetoReasons,
+    vetoDetails: out.vetoDetails,
+    setupReason: out.candidate?.structuralReason,
+    entryPrice: out.candidate?.entryPrice,
+    stopPrice: out.candidate?.stopPrice,
     calibratedWinProb: out.calibratedWinProb ?? 0,
     evNetR: out.evNetR ?? 0,
+    costR: out.costBreakdown?.totalR,
     decision,
   };
   recentOpportunities.unshift(entry);
@@ -739,8 +744,9 @@ export async function initEngine() {
       maybeBroadcastHeartbeat(asset);
     }
 
-    // Throttle CPU-heavy pipeline evaluation to candle close
-    if (candles.length > 1) {
+    // Throttle CPU-heavy pipeline evaluation to candle close. Skipped while the
+    // engine is stopped so a candle is never marked "evaluated" without a scan.
+    if (candles.length > 1 && state.running) {
       const currentCandleTime = candles[candles.length - 1].time;
       if (lastEvaluatedCandle.get(asset) !== currentCandleTime) {
         lastEvaluatedCandle.set(asset, currentCandleTime);

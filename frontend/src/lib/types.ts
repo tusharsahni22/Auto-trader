@@ -99,6 +99,11 @@ export interface Opportunity {
   archetype: Archetype;
   regime: Regime;
   vetoReasons: string[];
+  vetoDetails?: string[];
+  setupReason?: string;
+  entryPrice?: number;
+  stopPrice?: number;
+  costR?: number;
   calibratedWinProb: number;
   evNetR: number;
   decision: "OPEN" | "WATCH" | "VETO" | "NONE";

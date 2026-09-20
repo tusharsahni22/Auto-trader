@@ -13,6 +13,7 @@ import { getFundingRate, getMarketFeedHealth } from "../marketData.js";
 import { getPlattFittedAt } from "../learning/stats.js";
 import type { OpenRisk } from "../risk/portfolio.js";
 import type { ArchetypeCandidate, EvidenceGraph, RegimeSnapshot } from "./types.js";
+import { explainReason } from "./explain.js";
 
 /**
  * docs/01 §1 — the strictly ordered pipeline: features -> regime ->
@@ -39,6 +40,10 @@ export interface PipelineOutput {
   distributionR?: { p5: number; p25: number; p50: number; p75: number; p95: number };
   sizing?: ReturnType<typeof computeSizing>;
   vetoReasons: string[];
+  /** Plain-language explanation per vetoReasons entry (same order). */
+  vetoDetails?: string[];
+  fundingRate?: number;
+  maxFundingRate?: number;
   entryClusterStrengths?: Record<string, number>;
 }
 
@@ -110,6 +115,8 @@ export function scoreCandidate(
     costBreakdown: ev.costBreakdown,
     distributionR: ev.distributionR,
     vetoReasons: gates.reasons,
+    fundingRate,
+    maxFundingRate: Number(process.env.MAX_ENTRY_FUNDING_RATE ?? 0.003),
     entryClusterStrengths,
   };
 
@@ -119,7 +126,7 @@ export function scoreCandidate(
   if (false) {
     return { ...base, decision: "VETO", vetoReasons: ["DATA_STALE"] };
   }
-  const maxFundingRate = Number(process.env.MAX_ENTRY_FUNDING_RATE ?? 0.003);
+  const maxFundingRate = base.maxFundingRate ?? 0.003;
   if (Math.abs(fundingRate) >= maxFundingRate) {
     return { ...base, decision: "VETO", vetoReasons: [`EXTREME_FUNDING_${fundingRate.toFixed(6)}`] };
   }
@@ -167,6 +174,12 @@ export function scoreCandidate(
   return { ...base, decision: "OPEN", sizing, evNetUsd: ev.netR * sizing.riskPctOfEquity * equity };
 }
 
+/** Attaches a human-readable explanation to every veto/watch reason. */
+function withDetails(out: PipelineOutput): PipelineOutput {
+  if (out.vetoReasons.length === 0) return out;
+  return { ...out, vetoDetails: out.vetoReasons.map((code) => explainReason(code, out)) };
+}
+
 export function runPipeline(
   asset: string,
   candles: Candle[],
@@ -185,7 +198,7 @@ export function runPipeline(
   // Score every candidate and select the best risk-adjusted net EV. Detector
   // order is not a trading priority and must never decide which setup wins.
   const scored = candidates.map((candidate) =>
-    scoreCandidate(asset, candles, candidate, regime, equity, existingOpenRisk, circuitBreakerTripped, nowMs)
+    withDetails(scoreCandidate(asset, candles, candidate, regime, equity, existingOpenRisk, circuitBreakerTripped, nowMs))
   );
   const viable = scored.filter((out) => out.decision === "OPEN");
   if (viable.length > 0) {
