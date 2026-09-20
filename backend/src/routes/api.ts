@@ -11,6 +11,7 @@ import { botRouter } from "./bot.js";
 import { marketRouter } from "./market.js";
 import type { Asset, Direction } from "../types.js";
 import { acquireEngineLease } from "../db.js";
+import { getActivity, getDayDetail } from "../stats/activity.js";
 import { getDeltaConnectionInfo } from "../services/deltaExchange.js";
 
 export const api = Router();
@@ -149,6 +150,20 @@ api.get("/equity-curve", async (_req, res) => {
 
 api.get("/balance", async (_req, res) => {
   res.json(await getBalanceInfo());
+});
+
+api.get("/activity", (req, res) => {
+  const days = Math.min(365, Math.max(1, Number(req.query.days) || 90));
+  res.json(getActivity(days));
+});
+
+api.get("/activity/day", (req, res) => {
+  const date = String(req.query.date ?? "");
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    res.status(400).json({ error: "date must be YYYY-MM-DD" });
+    return;
+  }
+  res.json(getDayDetail(date));
 });
 
 api.get("/shadow", (_req, res) => {

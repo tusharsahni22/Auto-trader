@@ -12,9 +12,12 @@
 
 import type { Trade } from "../types.js";
 import { getLastPrice } from "../marketData.js";
+import { cancelBrackets, handleTargetReached, placeBrackets, syncBrackets } from "./brackets.js";
 import {
   closeDeltaPosition,
   executeDeltaTrade,
+  getDeltaPositions,
+  assetToProductId,
   getDeltaProduct,
   isDeltaExchangeEnabled,
 } from "./deltaExchange.js";
@@ -161,7 +164,7 @@ async function tryMirrorOpen(trade: Trade, onUpdate: ExecutionUpdate): Promise<v
       if (!filled) {
         // Timeout: cancel the stale order to prevent it from being filled later
         try {
-          await cancelDeltaOrder(orderId);
+          await cancelDeltaOrder(orderId, await assetToProductId(trade.asset));
           console.warn(`[execution] ${trade.asset} limit order ${orderId} not filled within ${FILL_TIMEOUT_MS / 1000}s — cancelled`);
         } catch (cancelErr: any) {
           console.error(`[execution] failed to cancel stale order ${orderId}:`, cancelErr?.message ?? cancelErr);
@@ -204,6 +207,11 @@ async function tryMirrorOpen(trade: Trade, onUpdate: ExecutionUpdate): Promise<v
         );
       }
     }
+    onUpdate(trade);
+
+    // Put the stop-loss and take-profits on the exchange so the position stays protected
+    // even if this backend goes down. Never throws; failures are recorded on the trade.
+    await placeBrackets(trade);
     onUpdate(trade);
   } catch (error: any) {
     trade.execution = {
@@ -253,9 +261,37 @@ async function tryMirrorClose(trade: Trade, onUpdate: ExecutionUpdate): Promise<
   try {
     const contracts = trade.execution?.contracts;
     if (!contracts || contracts < 1) return;
+
+    // Cancel resting protective orders first so a stop cannot fire in the middle of this close.
+    await cancelBrackets(trade);
+
+    // A bracket stop or target may already have flattened the position on the exchange.
+    // Close only what is really there: a plain close must never open a reverse position.
+    let exchangeSize: number | null = null;
+    try {
+      const symbol = trade.asset.replace(/USDT$/, "USD");
+      const positions = await getDeltaPositions();
+      const match = positions.find((p: any) => String(p.product_symbol ?? p.symbol ?? "") === symbol);
+      exchangeSize = match ? Math.abs(Number(match.size ?? match.position_size ?? 0)) : 0;
+    } catch {
+      /* cannot read positions: fall through and attempt the close */
+    }
+    if (exchangeSize === 0) {
+      const { findExchangeExit } = await import("./brackets.js");
+      const exit = await findExchangeExit(trade);
+      trade.execution = {
+        ...trade.execution, venue: trade.execution?.venue ?? "SIMULATED",
+        status: "CLOSED",
+        closeFillPrice: exit?.price,
+        closedAt: Date.now(),
+      };
+      onUpdate(trade);
+      return;
+    }
+    const closeSize = exchangeSize !== null ? Math.min(contracts, exchangeSize) : contracts;
     const order = await closeDeltaPosition({
       asset: trade.asset,
-      size: contracts,
+      size: closeSize,
       isLong: trade.direction === "LONG",
     });
 
@@ -270,6 +306,12 @@ async function tryMirrorClose(trade: Trade, onUpdate: ExecutionUpdate): Promise<
     };
     onUpdate(trade);
   } catch (error: any) {
+    // The close failed after the protective orders were cancelled: put the stop back so the
+    // still-open position is not naked while the retries run.
+    if (trade.execution?.bracket) {
+      trade.execution.bracket.status = "UNPROTECTED";
+      void syncBrackets(trade, true);
+    }
     trade.execution = {
       ...trade.execution, venue: trade.execution?.venue ?? "SIMULATED",
       status: "CLOSE_FAILED",
@@ -297,29 +339,42 @@ async function tryMirrorClose(trade: Trade, onUpdate: ExecutionUpdate): Promise<
 }
 
 /**
- * Executes a partial close on Delta Exchange when a target is hit locally.
+ * A target was reached locally. If Delta already has a take-profit order resting for it, that
+ * order fills itself and this only confirms it; otherwise the planned number of contracts is
+ * closed here with a reduce-only order. Afterwards the exchange stop is resized and moved
+ * (breakeven / trail) to match the smaller position.
  */
-export async function mirrorPartialCloseToDelta(trade: Trade, closeFraction: number): Promise<void> {
-  if (trade.execution?.venue !== 'DELTA' || trade.execution.status !== 'FILLED') return;
+export async function mirrorPartialCloseToDelta(trade: Trade, closeFraction: number, targetPrice?: number): Promise<void> {
+  if (trade.execution?.venue !== "DELTA" || trade.execution.status !== "FILLED") return;
   const totalContracts = trade.execution.contracts;
   if (!totalContracts || totalContracts < 1) return;
 
-  const contractsToClose = Math.max(1, Math.floor(totalContracts * closeFraction));
-  if (contractsToClose < 1) return;
-
   try {
+    let size: number;
+    if (targetPrice !== undefined) {
+      const result = await handleTargetReached(trade, targetPrice);
+      if (result.mode === "EXCHANGE") {
+        console.log(`[execution] ${trade.asset} take-profit filled on Delta (${result.size} contracts)`);
+        await syncBrackets(trade, true);
+        return;
+      }
+      size = result.size;
+    } else {
+      size = Math.max(1, Math.floor(totalContracts * closeFraction));
+    }
+
+    size = Math.min(size, totalContracts);
+    if (size < 1) return;
     await closeDeltaPosition({
       asset: trade.asset,
-      size: contractsToClose,
-      isLong: trade.direction === 'LONG',
+      size,
+      isLong: trade.direction === "LONG",
     });
-    // Successfully reduced position on exchange.
-    // Update local record so the final close uses the remaining amount.
-    trade.execution.contracts = (trade.execution.contracts ?? 0) - contractsToClose;
-    console.log(`[execution] Partially closed ${contractsToClose} contracts for ${trade.asset}`);
+    // Reduced the position on the exchange: keep the local contract count in step.
+    trade.execution.contracts = (trade.execution.contracts ?? 0) - size;
+    console.log(`[execution] Partially closed ${size} contracts for ${trade.asset}`);
+    await syncBrackets(trade, true);
   } catch (error: any) {
     console.error(`[execution] Partial close failed for ${trade.asset}:`, error?.message ?? error);
   }
 }
-
-

@@ -89,6 +89,29 @@ export interface Trade {
   maxFavorableExcursionR: number;
   maxAdverseExcursionR: number;
   maxHoldHours: number;
+
+  /** How and whether this trade reached a real exchange. */
+  execution?: TradeExecution;
+}
+
+export type ExecutionStatus = "SIMULATED" | "PENDING" | "FILLED" | "REJECTED" | "FAILED" | "CLOSED" | "CLOSE_FAILED";
+
+export interface BracketState {
+  status: "PROTECTED" | "UNPROTECTED" | "OFF";
+  slOrderId?: string;
+  slPrice?: number;
+  slSize?: number;
+  tps: { index: number; price: number; size: number; orderId?: string; done?: boolean }[];
+  error?: string;
+}
+
+export interface TradeExecution {
+  venue: "SIMULATED" | "DELTA";
+  status: ExecutionStatus;
+  bracket?: BracketState;
+  contracts?: number;
+  avgFillPrice?: number;
+  error?: string;
 }
 
 export interface Opportunity {
@@ -107,6 +130,54 @@ export interface Opportunity {
   calibratedWinProb: number;
   evNetR: number;
   decision: "OPEN" | "WATCH" | "VETO" | "NONE";
+}
+
+export interface ActivityRow {
+  key: string;
+  label: string;
+  scans: number;
+  noSetup: number;
+  opportunities: number;
+  open: number;
+  watch: number;
+  veto: number;
+  byArchetype: Record<string, { found: number; open: number }>;
+  byAsset: Record<string, number>;
+  byDirection: { LONG: number; SHORT: number };
+  vetoReasons: Record<string, number>;
+  tradesOpened: number;
+  tradesClosed: number;
+  wins: number;
+  losses: number;
+  pnlUsd: number;
+  exitReasons: Record<string, number>;
+  children?: ActivityRow[];
+}
+
+export interface ActivityData {
+  days: ActivityRow[];
+  weeks: ActivityRow[];
+  months: ActivityRow[];
+  total: ActivityRow;
+}
+
+export interface DayDetail {
+  date: string;
+  opportunities: {
+    id: string;
+    time: number;
+    asset: string;
+    direction: string;
+    archetype: string;
+    regime: string;
+    decision: string;
+    vetoReasons: string[];
+    vetoDetails?: string[];
+    setupReason?: string;
+    calibratedWinProb: number;
+    evNetR: number;
+  }[];
+  trades: { id: string; asset: string; direction: string; archetype: string; entryTime: number; entryPrice: number; status: string; exitReason: string | null; pnlUsd: number }[];
 }
 
 export interface EngineState {

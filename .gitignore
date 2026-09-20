@@ -14,3 +14,6 @@ backend/data/
 *.timestamp-*.mjs
 .claude/*
 !.claude/settings.json
+
+# Local trading ledger (trades, balance, learned stats)
+data/

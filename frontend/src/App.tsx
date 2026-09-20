@@ -21,6 +21,7 @@ import Filters, { FilterState } from "./components/Filters";
 import TradeList from "./components/TradeList";
 import TradeDetail from "./components/TradeDetail";
 import OpportunityFeed from "./components/OpportunityFeed";
+import ActivityPanel from "./components/ActivityPanel";
 import RegimeBadge from "./components/RegimeBadge";
 import EngineHeartbeat from "./components/EngineHeartbeat";
 import LivePriceTicker from "./components/LivePriceTicker";
@@ -45,7 +46,7 @@ const DEFAULT_PRESETS: Record<PresetId, boolean> = {
   signals: true,
 };
 
-type BottomTab = "trades" | "bot";
+type BottomTab = "trades" | "bot" | "activity";
 
 export default function App() {
   const [asset, setAsset] = useState<Asset>("BTCUSDT");
@@ -333,6 +334,7 @@ export default function App() {
   const bottomTabs: { id: BottomTab; label: string; count: number }[] = [
     { id: "trades", label: "Trades", count: filteredTrades.length },
     { id: "bot", label: "Bot decisions", count: botDecisions.length },
+    { id: "activity", label: "Activity", count: opportunities.length },
   ];
 
   return (
@@ -510,6 +512,7 @@ export default function App() {
             <TradeList trades={filteredTrades} onSelect={setSelectedTrade} selectedId={selectedTrade?.id} />
           )}
           {bottomTab === "bot" && <BotDecisionLog decisions={botDecisions} />}
+          {bottomTab === "activity" && <ActivityPanel active={bottomTab === "activity"} />}
         </div>
       </div>
     </div>

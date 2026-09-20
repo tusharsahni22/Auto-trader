@@ -10,6 +10,9 @@ import type { ArchetypeCandidate } from "../decision/types.js";
 import { applyExchangeClose, finalizeClose, manageTrade } from "../lifecycle/manager.js";
 import { onTradeClosed } from "../learning/recalibrate.js";
 import { openShadow, updateShadows, getShadowSummary } from "../learning/shadow.js";
+import { checkEntryLiquidity, liquidityGateMode } from "../services/liquidity.js";
+import { recentLoggedOpportunities, recordOpportunity, recordScan, reloadActivity } from "../stats/activity.js";
+import { syncBrackets, verifyBrackets, findExchangeExit } from "../services/brackets.js";
 import { evaluateCircuitBreakers, openRiskFromTrade, type OpenRisk } from "../risk/portfolio.js";
 
 const ASSETS: Asset[] = ["BTCUSDT", "ETHUSDT"];
@@ -131,6 +134,25 @@ export function setBroadcaster(fn: Broadcaster) {
 
 /** Called after MongoDB ledger hydration, because this module is imported before startup connects. */
 export function reloadPersistedState() {
+  reloadActivity();
+  if (recentOpportunities.length === 0) {
+    for (const o of recentLoggedOpportunities(MAX_OPPORTUNITY_LOG)) {
+      recentOpportunities.push({
+        id: o.id,
+        time: o.time,
+        asset: o.asset as Asset,
+        direction: o.direction as Direction,
+        archetype: o.archetype as any,
+        regime: o.regime as any,
+        vetoReasons: o.vetoReasons,
+        vetoDetails: o.vetoDetails,
+        setupReason: o.setupReason,
+        calibratedWinProb: o.calibratedWinProb,
+        evNetR: o.evNetR,
+        decision: o.decision,
+      });
+    }
+  }
   state.equity = Number(getKv("equity") ?? STARTING_EQUITY);
   equityPeak = Number(getKv("equityPeak") ?? state.equity);
   dayStartEquity = Number(getKv("dayStartEquity") ?? state.equity);
@@ -220,6 +242,20 @@ function logOpportunity(asset: Asset, decision: string, out: ReturnType<typeof r
   };
   recentOpportunities.unshift(entry);
   if (recentOpportunities.length > MAX_OPPORTUNITY_LOG) recentOpportunities.length = MAX_OPPORTUNITY_LOG;
+  recordOpportunity({
+    id: entry.id,
+    time: entry.time,
+    asset: entry.asset,
+    direction: entry.direction,
+    archetype: entry.archetype,
+    regime: entry.regime,
+    decision,
+    vetoReasons: entry.vetoReasons,
+    vetoDetails: entry.vetoDetails,
+    setupReason: entry.setupReason,
+    calibratedWinProb: entry.calibratedWinProb,
+    evNetR: entry.evNetR,
+  });
   broadcast("opportunity", entry);
 }
 
@@ -345,7 +381,18 @@ function openTrade(asset: Asset, trade: Trade) {
 const SETUP_COOLDOWN_MS = Number(process.env.SETUP_COOLDOWN_MIN ?? 60) * 60_000;
 const lastSetupAt = new Map<string, number>();
 
+const evaluating = new Set<Asset>();
+
 function tryOpenPosition(asset: Asset) {
+  // The liquidity check awaits the network, so guard against overlapping evaluations of one asset.
+  if (evaluating.has(asset)) return;
+  evaluating.add(asset);
+  void evaluateAndMaybeOpen(asset)
+    .catch((error) => console.error(`[engine] evaluation failed for ${asset}:`, error))
+    .finally(() => evaluating.delete(asset));
+}
+
+async function evaluateAndMaybeOpen(asset: Asset) {
   if (!state.running) return;
   const perAssetOpen = [...openTrades.values()].filter((t) => t.asset === asset).length;
   if (perAssetOpen >= MAX_POSITIONS_PER_ASSET) return;
@@ -360,7 +407,21 @@ function tryOpenPosition(asset: Asset) {
 
   const existingOpenRisk = getOpenRiskExcept(asset);
   const tripped = circuitBreakerTripped();
-  const out = runPipeline(asset, candles, state.equity, existingOpenRisk, tripped, Date.now());
+  let out = runPipeline(asset, candles, state.equity, existingOpenRisk, tripped, Date.now());
+  recordScan(out.decision !== "NONE");
+
+  // Liquidity gate: never enter a market whose spread or depth makes the trade a loss on arrival.
+  if (out.decision === "OPEN" && out.candidate && out.sizing) {
+    const liquidity = await checkEntryLiquidity(asset, out.candidate.direction, out.sizing.quantity);
+    if (!liquidity.ok) {
+      if (liquidityGateMode() === "enforce") {
+        out = { ...out, decision: "VETO", vetoReasons: ["LIQUIDITY_GATE"], vetoDetails: [liquidity.detail] };
+      } else {
+        console.warn(`[liquidity] ${asset} would be blocked (shadow mode): ${liquidity.detail}`);
+      }
+    }
+    if (!state.running) return;
+  }
 
   // Cooldown: a setup usually persists across several consecutive candles. Log/shadow/open it once
   // per cooldown window instead of on every bar (which spams the feed and double-counts outcomes).
@@ -564,14 +625,14 @@ export function getOpenPositions() {
 }
 
 /** Closes an open position at the current mark price. */
-export function closeTradeManually(tradeId: string): { ok: true; trade: Trade } | { ok: false; error: string } {
+export function closeTradeManually(tradeId: string, reason = "MANUAL_CLOSE"): { ok: true; trade: Trade } | { ok: false; error: string } {
   const trade = openTrades.get(tradeId);
   if (!trade) return { ok: false, error: "No open trade with that id" };
 
   const price = getLastPrice(trade.asset);
   if (price === null) return { ok: false, error: "No live price available to close against" };
 
-  finalizeClose(trade, price, "MANUAL_CLOSE", Date.now());
+  finalizeClose(trade, price, reason, Date.now());
   openTrades.delete(trade.id);
   state.openPositions = openTrades.size;
   upsertTrade(trade);
@@ -614,27 +675,36 @@ function manageOpenTrades(asset: Asset) {
     if (trade.asset !== asset) continue;
     const result = manageTrade(trade, candles, Date.now());
     upsertTrade(result.trade);
-    if (result.newFills.length > 0) {
-      broadcast("trade_updated", result.trade);
-      // Fire partial closes to the exchange immediately so they aren't phantom paper trades
-      void (async () => {
-        const { mirrorPartialCloseToDelta } = await import("../services/execution.js");
-        for (const fill of result.newFills) {
-          await mirrorPartialCloseToDelta(result.trade, fill.fraction);
-          upsertTrade(result.trade);
-        }
-      })();
-    }
+    if (result.newFills.length > 0) broadcast("trade_updated", result.trade);
+
+    // Mirror target fills to the exchange, one at a time and BEFORE any full close. Only real
+    // target fills are partials: a stop/thesis/time exit is handled once, by the full close below.
+    const targetFills = result.newFills.filter((f) => f.reason === "TARGET_HIT");
+    const partials =
+      targetFills.length > 0
+        ? (async () => {
+            const { mirrorPartialCloseToDelta } = await import("../services/execution.js");
+            for (const fill of targetFills) {
+              await mirrorPartialCloseToDelta(result.trade, fill.fraction, fill.price);
+              upsertTrade(result.trade);
+            }
+          })().catch((error) => console.error("[engine] partial close mirror failed:", error))
+        : undefined;
+
     if (result.closed) {
       openTrades.delete(trade.id);
       state.openPositions = openTrades.size;
-      persistTradeClose(trade);
+      persistTradeClose(trade, partials);
+    } else {
+      // Keep the exchange stop in step with the engine's stop (breakeven / trailing).
+      if (trade.execution?.bracket) void syncBrackets(result.trade);
     }
   }
 }
 
-function persistTradeClose(trade: Trade) {
+function persistTradeClose(trade: Trade, after?: Promise<void>) {
   void (async () => {
+    await after; // finish mirroring target fills before flattening what is left
     const { mirrorCloseToDelta } = await import("../services/execution.js");
     await mirrorCloseToDelta(trade, (updatedTrade) => {
       if (updatedTrade.execution?.closeFillPrice) {
@@ -677,10 +747,22 @@ export async function reconcileDeltaPositions() {
       if (trade.execution?.venue !== "DELTA" || trade.execution.status !== "FILLED") continue;
       const symbol = trade.asset.replace(/USDT$/, "USD");
       const exchangeSize = live.get(symbol) ?? 0;
-      if (exchangeSize > 0) continue;
+      if (exchangeSize > 0) {
+        // Still open on the exchange: make sure its stop is resting, and flatten it if it cannot be protected.
+        await verifyBrackets(trade, exchangeSize);
+        const bracket = trade.execution.bracket;
+        const failsafeMs = Number(process.env.BRACKET_FAILSAFE_SEC ?? 60) * 1000;
+        if (bracket?.status === "UNPROTECTED" && bracket.unprotectedSince && Date.now() - bracket.unprotectedSince > failsafeMs) {
+          console.error(`[reconcile] ${trade.asset} has been without an exchange stop for over ${failsafeMs / 1000}s — closing it (fail-safe)`);
+          closeTradeManually(trade.id, "PROTECTION_FAILSAFE");
+        }
+        continue;
+      }
 
+      // Gone from the exchange: a bracket stop or target closed it. Recover the real exit from the order fills.
+      const exchangeExit = await findExchangeExit(trade);
       const mark = getLastPrice(trade.asset) ?? trade.entryPrice;
-      finalizeClose(trade, mark, "EXCHANGE_EXTERNAL_CLOSE", Date.now());
+      finalizeClose(trade, exchangeExit?.price ?? mark, exchangeExit?.reason ?? "EXCHANGE_EXTERNAL_CLOSE", Date.now());
       trade.execution = { ...trade.execution, status: "CLOSED", closedAt: Date.now() };
       openTrades.delete(trade.id);
       state.openPositions = openTrades.size;

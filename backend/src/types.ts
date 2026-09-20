@@ -91,6 +91,18 @@ export type ExecutionStatus =
   | "CLOSED"
   | "CLOSE_FAILED";
 
+/** Exchange-side stop-loss / take-profit orders that protect a live position even if this backend is down. */
+export interface BracketState {
+  status: "PROTECTED" | "UNPROTECTED" | "OFF";
+  slOrderId?: string;
+  slPrice?: number;
+  slSize?: number;
+  tps: { index: number; price: number; size: number; orderId?: string; done?: boolean }[];
+  unprotectedSince?: number;
+  syncedAt?: number;
+  error?: string;
+}
+
 export interface TradeExecution {
   venue: "SIMULATED" | "DELTA";
   status: ExecutionStatus;
@@ -114,6 +126,9 @@ export interface TradeExecution {
   retryAt?: number;
   /** Current mark-to-stop exposure in USD, calculated before a retry. */
   currentRiskUsd?: number;
+  /** Contracts to close at each target, fixed when the entry fills. */
+  tpSizes?: number[];
+  bracket?: BracketState;
 }
 
 export interface VetoedOpportunity {

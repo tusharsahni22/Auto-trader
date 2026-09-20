@@ -127,6 +127,11 @@ export async function placeDeltaOrder(params: {
   limitPrice?: number;
   stopPrice?: number;
   timeInForce?: 'gtc' | 'ioc' | 'fok';
+  /** Reduce-only orders can shrink a position but never open or flip one. */
+  reduceOnly?: boolean;
+  /** Turns the order into an exchange-side stop-loss / take-profit trigger. */
+  stopOrderType?: 'stop_loss_order' | 'take_profit_order';
+  stopTriggerMethod?: 'mark_price' | 'last_traded_price';
 }): Promise<any> {
   try {
     const orderParams: any = {
@@ -144,6 +149,12 @@ export async function placeDeltaOrder(params: {
     if (params.stopPrice) {
       orderParams.stop_price = params.stopPrice.toString();
     }
+    if (params.reduceOnly) orderParams.reduce_only = true;
+    if (params.stopOrderType) {
+      orderParams.stop_order_type = params.stopOrderType;
+      orderParams.stop_trigger_method = params.stopTriggerMethod ?? 'mark_price';
+      delete orderParams.time_in_force; // trigger orders do not take a time-in-force
+    }
 
     const result = await deltaRequest('POST', '/v2/orders', orderParams);
     console.log('[deltaExchange] Order placed:', result.result);
@@ -157,15 +168,36 @@ export async function placeDeltaOrder(params: {
 /**
  * Cancel an order
  */
-export async function cancelDeltaOrder(orderId: string): Promise<any> {
+export async function cancelDeltaOrder(orderId: string, productId?: number): Promise<any> {
   try {
-    const result = await deltaRequest('DELETE', `/v2/orders/${orderId}`);
+    // Delta cancels via DELETE /v2/orders with the order id and product id in the body.
+    const result = productId !== undefined
+      ? await deltaRequest('DELETE', '/v2/orders', { id: Number(orderId), product_id: productId })
+      : await deltaRequest('DELETE', `/v2/orders/${orderId}`);
     console.log('[deltaExchange] Order canceled:', orderId);
     return result.result;
   } catch (error: any) {
     console.error('[deltaExchange] Failed to cancel order:', error);
     throw error;
   }
+}
+
+/**
+ * Open and pending orders for one product (used to verify stops/targets still exist).
+ */
+export async function getDeltaOpenOrders(productId: number): Promise<any[]> {
+  const result = await deltaRequest('GET', `/v2/orders?product_ids=${productId}&states=open,pending`);
+  return Array.isArray(result.result) ? result.result : [];
+}
+
+/**
+ * Public L2 order book, used by the pre-trade liquidity gate.
+ */
+export async function getDeltaOrderBook(symbol: string, depth = 20): Promise<{ buy: { price: string; size: number }[]; sell: { price: string; size: number }[] }> {
+  const response = await fetch(`${BASE_URL}/v2/l2orderbook/${symbol}?depth=${depth}`, { headers: { 'User-Agent': 'auto-trader' } });
+  if (!response.ok) throw new Error(`Delta order book failed: ${response.status}`);
+  const data = (await response.json()) as { result?: { buy?: any[]; sell?: any[] } };
+  return { buy: data.result?.buy ?? [], sell: data.result?.sell ?? [] };
 }
 
 /**
@@ -387,10 +419,40 @@ export async function closeDeltaPosition(params: {
   const productId = await assetToProductId(params.asset);
   const side = params.isLong ? 'sell' : 'buy'; // Opposite of position
 
+  // Reduce-only: if the exchange already closed this position (for example a bracket stop
+  // fired first), this is rejected instead of opening a reverse position.
   return placeDeltaOrder({
     productId,
     size: params.size,
     side,
     orderType: 'market_order',
+    reduceOnly: true,
+  });
+}
+
+/**
+ * Exchange-side protective order: a reduce-only market order that triggers on the mark price.
+ * A stop-loss survives a backend crash or restart; that is the point of using it.
+ */
+export async function placeDeltaStopOrder(params: {
+  asset: string;
+  isLong: boolean;
+  size: number;
+  triggerPrice: number;
+  kind: 'stop_loss_order' | 'take_profit_order';
+}): Promise<any> {
+  const product = await getDeltaProduct(params.asset);
+  const tick = Number(product.tick_size) || 0.5;
+  const rounded = Math.round(params.triggerPrice / tick) * tick;
+  const decimals = (String(tick).split('.')[1] ?? '').length;
+  return placeDeltaOrder({
+    productId: product.id,
+    size: params.size,
+    side: params.isLong ? 'sell' : 'buy', // opposite of the position
+    orderType: 'market_order',
+    stopPrice: Number(rounded.toFixed(decimals)),
+    reduceOnly: true,
+    stopOrderType: params.kind,
+    stopTriggerMethod: 'mark_price',
   });
 }

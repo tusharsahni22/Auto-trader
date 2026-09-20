@@ -111,6 +111,35 @@ function upsertLiveCandle(asset: Asset, interval: string, candle: Candle) {
   }
 }
 
+function intervalToSeconds(interval: string): number {
+  const n = Number(interval.slice(0, -1));
+  const unit = interval.slice(-1);
+  const mult = unit === "m" ? 60 : unit === "h" ? 3600 : unit === "d" ? 86400 : 60;
+  return Number.isFinite(n) && n > 0 ? n * mult : 900;
+}
+
+async function pollDeltaTicker(asset: Asset, interval: string, intervalSec: number) {
+  const { getDeltaTicker, assetToDeltaSymbol } = await import("./services/deltaExchange.js");
+  const ticker = await getDeltaTicker(assetToDeltaSymbol(asset));
+  // mark_price moves continuously; the last-trade "close" only changes when a trade prints (rare on testnet).
+  const price = Number(ticker?.mark_price ?? ticker?.close);
+  if (!Number.isFinite(price) || price <= 0) return;
+
+  const arr = store.get(key(asset, interval));
+  const last = arr?.[arr.length - 1];
+  lastPrice.set(asset, price);
+  feedUpdatedAt.set(asset, Date.now());
+  if (!last) return;
+
+  // Only extend the candle that is actually forming; a new period's candle arrives with the 60s refresh.
+  if (Date.now() / 1000 < last.time + intervalSec) {
+    last.close = price;
+    last.high = Math.max(last.high, price);
+    last.low = Math.min(last.low, price);
+  }
+  for (const listener of listeners) listener(asset, price, last);
+}
+
 export type PriceListener = (asset: Asset, price: number, candle: Candle) => void;
 const listeners: PriceListener[] = [];
 export function onPrice(fn: PriceListener) {
@@ -150,6 +179,25 @@ export async function startMarketData(assets: Asset[], intervals: string[]) {
       }
     }
   }, 60_000);
+
+  // Once Delta is the candle source, Binance ticks are ignored and Delta candles only refresh every
+  // 60s, which froze the live price between refreshes. Poll Delta's ticker for a fresh last price and
+  // fold it into the forming candle so the price (and chart) move every couple of seconds.
+  const primary = intervals[0];
+  const intervalSec = intervalToSeconds(primary);
+  const tickerPollMs = Number(process.env.DELTA_TICKER_POLL_MS ?? 2000);
+  const tickerBusy = new Set<Asset>();
+  const tickerBackoffUntil = new Map<Asset, number>();
+  setInterval(() => {
+    for (const asset of assets) {
+      if (feedSource.get(asset) !== "delta" || tickerBusy.has(asset)) continue;
+      if (Date.now() < (tickerBackoffUntil.get(asset) ?? 0)) continue;
+      tickerBusy.add(asset);
+      void pollDeltaTicker(asset, primary, intervalSec)
+        .catch(() => tickerBackoffUntil.set(asset, Date.now() + 10_000))
+        .finally(() => tickerBusy.delete(asset));
+    }
+  }, tickerPollMs);
 
   const streams = assets.flatMap((a) =>
     intervals.map((i) => `${a.toLowerCase()}@kline_${i}`)

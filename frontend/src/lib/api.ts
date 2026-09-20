@@ -1,4 +1,4 @@
-import type { Asset, Candle, Direction, EngineState, Opportunity, PnlPoint, RegimeSnapshot, ScanInfo, Trade } from "./types";
+import type { ActivityData, DayDetail, Asset, Candle, Direction, EngineState, Opportunity, PnlPoint, RegimeSnapshot, ScanInfo, Trade } from "./types";
 
 export type BotSignal = "BUY" | "SELL" | "HOLD";
 
@@ -188,6 +188,8 @@ export const api = {
       body: JSON.stringify(patch),
     }).then((r) => json<{ config: BotConfig }>(r)),
   opportunities: () => fetch("/api/opportunities").then((r) => json<Opportunity[]>(r)),
+  activity: (days = 90) => fetch("/api/activity?days=" + days).then((r) => json<ActivityData>(r)),
+  activityDay: (date: string) => fetch("/api/activity/day?date=" + date).then((r) => json<DayDetail>(r)),
   regime: (asset: Asset) =>
     fetch(`/api/regime/${asset}`).then((r) => json<{ asset: Asset; regime: RegimeSnapshot; fundingRate: number }>(r)),
   forceTrade: (asset: Asset, direction: Direction) =>
