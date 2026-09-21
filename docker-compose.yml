@@ -1,50 +1,27 @@
+# Pull-based deploy. Images come from Docker Hub; everything configurable lives in
+# a .env file sitting next to this one.
+#
+#   docker compose pull && docker compose up -d
+#
+# `env_file` passes that .env straight into the container, so ADDING A NEW SETTING
+# NEVER NEEDS THIS FILE EDITED — put the key in .env and restart. Only the three
+# values below are set here, because they describe the container rather than the
+# strategy, and every other setting has a working default in code. Start from
+# .env.deploy.example; anything you leave out simply uses its default.
 services:
   backend:
     image: ${DOCKERHUB_IMAGE:-tusharsahni22/auto-trader}:${BACKEND_TAG:-backend-latest}
     ports:
       - "${BACKEND_PORT:-4000}:4000"
+    env_file:
+      # Optional: the stack still starts on defaults if no .env is present.
+      - path: .env
+        required: false
     environment:
       NODE_ENV: production
       PORT: 4000
+      # Must match the named volume below, not the host layout.
       DATA_DIR: /app/data
-      STARTING_EQUITY: ${STARTING_EQUITY:-10000}
-      MONGODB_URI: ${MONGODB_URI:-}
-      COINGECKO_API_KEY: ${COINGECKO_API_KEY:-}
-      CRYPTOCOMPARE_API_KEY: ${CRYPTOCOMPARE_API_KEY:-}
-      ECONOMIC_CALENDAR_API_KEY: ${ECONOMIC_CALENDAR_API_KEY:-}
-      DELTA_EXCHANGE_API_KEY: ${DELTA_EXCHANGE_API_KEY:-}
-      DELTA_EXCHANGE_API_SECRET: ${DELTA_EXCHANGE_API_SECRET:-}
-      DELTA_EXCHANGE_BASE_URL: ${DELTA_EXCHANGE_BASE_URL:-}
-      LIVE_TRADING: ${LIVE_TRADING:-false}
-      DELTA_EXECUTION_MAX_RETRIES: ${DELTA_EXECUTION_MAX_RETRIES:-5}
-      # limit rests at the mark for the cheaper maker fee but can expire unfilled;
-      # market crosses the spread so it effectively always fills.
-      DELTA_ENTRY_ORDER_TYPE: ${DELTA_ENTRY_ORDER_TYPE:-limit}
-      LIMIT_ORDER_TIMEOUT_MS: ${LIMIT_ORDER_TIMEOUT_MS:-120000}
-      AUTO_START_ENGINE: ${AUTO_START_ENGINE:-true}
-      NEWS_ENABLED: ${NEWS_ENABLED:-true}
-      NEWS_BLACKOUT_MIN: ${NEWS_BLACKOUT_MIN:-15}
-      NEWS_CURRENCIES: ${NEWS_CURRENCIES:-USD,EUR,GBP,JPY,CNY}
-      NEWS_REFRESH_SEC: ${NEWS_REFRESH_SEC:-180}
-      NEWS_FEEDS: ${NEWS_FEEDS:-}
-      # The calendar now comes from ForexFactory's free weekly feed, so this no
-      # longer has to be throttled to protect a metered API key — but the host
-      # rate-limits hard, so keep it well above the headline refresh.
-      NEWS_CALENDAR_REFRESH_SEC: ${NEWS_CALENDAR_REFRESH_SEC:-1800}
-      # Delta India charges and Indian tax treatment, used for net P&L and the tax panel.
-      DELTA_TAKER_FEE_RATE: ${DELTA_TAKER_FEE_RATE:-0.0005}
-      DELTA_MAKER_FEE_RATE: ${DELTA_MAKER_FEE_RATE:-0.0002}
-      INDIA_GST_RATE: ${INDIA_GST_RATE:-0.18}
-      INDIA_TDS_RATE: ${INDIA_TDS_RATE:-0}
-      INDIA_VDA_TAX_RATE: ${INDIA_VDA_TAX_RATE:-0.30}
-      INDIA_CESS_RATE: ${INDIA_CESS_RATE:-0.04}
-      USD_INR_RATE: ${USD_INR_RATE:-88}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      AGENTS_ENABLED: ${AGENTS_ENABLED:-false}
-      ENGINE_INSTANCE_ID: ${ENGINE_INSTANCE_ID:-local}
-      ENGINE_LEADER_ID: ${ENGINE_LEADER_ID:-domain}
-      LEDGER_MIGRATE_LOCAL_FILE: ${LEDGER_MIGRATE_LOCAL_FILE:-false}
     volumes:
       - trader_data:/app/data
     healthcheck:
@@ -61,6 +38,7 @@ services:
       - "${FRONTEND_PORT:-5173}:5173"
     environment:
       NODE_ENV: production
+      # Container-to-container, so this is the service name rather than a host port.
       VITE_API_PROXY: http://backend:4000
     depends_on:
       backend:

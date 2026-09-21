@@ -56,7 +56,8 @@ into `decision/claims.ts` later without touching anything else.
    ```bash
    cp .env.example .env
    ```
-   *(If you are using Docker, you can also copy `docker-compose.yml.example` to `docker-compose.yml` if needed).*
+   *(Deploying with Docker? Use `cp .env.deploy.example .env` instead — `docker-compose.yml`
+   passes that file into the container, so adding a setting never means editing compose.)*
 
 3. **Install Dependencies & Run (Local):**
    ```bash
