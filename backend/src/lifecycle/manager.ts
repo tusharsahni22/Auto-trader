@@ -88,12 +88,22 @@ export function finalizeClose(trade: Trade, price: number, reason: string, time:
   trade.exitReason = reason;
 }
 
-/** Replace the estimated close with the exchange's actual weighted fill and P&L. */
+/**
+ * Replace the estimated close with the exchange's actual weighted fill and P&L.
+ *
+ * `realizedPnlUsd` stays GROSS here. Fees used to be subtracted at this point, but
+ * the charges layer (services/charges.ts) also subtracts them to produce the net
+ * figure — so a live trade had its fee and GST counted twice. One owner for cost
+ * accounting: this function reports what the position made, `charges` reports what
+ * it cost. `feeUsd` is still accepted so callers need no change, and it is recorded
+ * on the execution record where the charges layer reads it from.
+ */
 export function applyExchangeClose(trade: Trade, fillPrice: number, exchangePnl?: number, feeUsd = 0) {
   if (!Number.isFinite(fillPrice) || fillPrice <= 0) return;
   trade.exitPrice = fillPrice;
+  if (feeUsd > 0 && trade.execution) trade.execution.closeFeeUsd = feeUsd;
   if (exchangePnl !== undefined && Number.isFinite(exchangePnl)) {
-    trade.realizedPnlUsd = exchangePnl - feeUsd - (trade.execution?.entryFeeUsd ?? 0);
+    trade.realizedPnlUsd = exchangePnl;
     trade.pnlUsd = trade.realizedPnlUsd;
     trade.pnlPct = (trade.realizedPnlUsd / (trade.entryPrice * trade.initialQuantity)) * 100;
     const stopDist = Math.abs(trade.entryPrice - trade.initialStopPrice) * trade.initialQuantity;

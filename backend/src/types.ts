@@ -1,4 +1,5 @@
 import type { Archetype, Cluster, CostBreakdown, Regime } from "./decision/types.js";
+import type { TradeCharges } from "./services/charges.js";
 
 export type Asset = "BTCUSDT" | "ETHUSDT";
 export type Direction = "LONG" | "SHORT";
@@ -80,6 +81,15 @@ export interface Trade {
 
   /** How and whether this trade reached a real exchange. */
   execution?: TradeExecution;
+
+  /**
+   * Last local write, in ms. The ledger merges the MongoDB copy with the local
+   * one instead of letting either replace the other, and this is the tie-break.
+   */
+  updatedAt?: number;
+
+  /** Fees, GST and TDS for the round trip, plus the net and after-tax P&L. */
+  charges?: TradeCharges;
 }
 
 export type ExecutionStatus =
@@ -159,6 +169,7 @@ export interface EngineState {
 }
 
 export interface PnlPoint {
+  /** UNIX SECONDS, not ms — this is what lightweight-charts takes on the equity chart. */
   time: number;
   equity: number;
   realizedPnl: number;

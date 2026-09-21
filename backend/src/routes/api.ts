@@ -1,7 +1,8 @@
 import { Router } from "express";
 import { getCandles, getFundingRate } from "../marketData.js";
 import { closeTradeManually, forceOpenTrade, getAssets, getBalanceInfo, getEngineState, getEquityCurve, getInterval, getLastScans, getOpenPositions, getRecentOpportunities, getShadowSummary, getSharedEngineState, reconcileDeltaPositions, startEngine, stopEngine, syncEngineFromLedger, updateTradeStop } from "../engine/index.js";
-import { getEngineRole, getTrades, refreshLedger } from "../db.js";
+import { getEngineRole, getLedgerHealth, getTrades, refreshLedger } from "../db.js";
+import { getLiveTradingStatus } from "../services/execution.js";
 import { classifyRegime } from "../decision/regime.js";
 import { getAllCellStats, getPlattParams } from "../learning/stats.js";
 import { newsCalendarRouter } from "./newsCalendar.js";
@@ -13,8 +14,15 @@ import type { Asset, Direction } from "../types.js";
 import { acquireEngineLease } from "../db.js";
 import { getActivity, getDayDetail } from "../stats/activity.js";
 import { getDeltaConnectionInfo } from "../services/deltaExchange.js";
+import { researchRouter } from "./research.js";
+import { analyticsRouter } from "./analytics.js";
+import { chargesFor, withCharges } from "../services/tradeCharges.js";
+import { getLastPrice } from "../marketData.js";
 
 export const api = Router();
+
+// Analytics, order history, training monitor and the India tax position (read-only).
+api.use("/analytics", analyticsRouter);
 
 // Mount news calendar routes
 api.use("/news-calendar", newsCalendarRouter);
@@ -32,7 +40,18 @@ api.use("/bot", botRouter);
 api.use("/market", marketRouter);
 
 api.get("/status", async (_req, res) => {
-  res.json({ engine: await getSharedEngineState(), role: getEngineRole(), delta: getDeltaConnectionInfo(), assets: getAssets(), interval: getInterval(), scans: getLastScans() });
+  res.json({
+    engine: await getSharedEngineState(),
+    role: getEngineRole(),
+    delta: getDeltaConnectionInfo(),
+    assets: getAssets(),
+    interval: getInterval(),
+    scans: getLastScans(),
+    // Surfaced so a silently failing exchange connection is visible on the dashboard
+    // rather than only in the server log.
+    live: getLiveTradingStatus(),
+    ledger: await getLedgerHealth(),
+  });
 });
 
 api.post("/engine/start", async (_req, res) => {
@@ -83,7 +102,9 @@ api.get("/trades", async (req, res) => {
   if (direction) trades = trades.filter((t) => t.direction === direction);
   if (from) trades = trades.filter((t) => t.entryTime >= Number(from));
   if (to) trades = trades.filter((t) => t.entryTime <= Number(to));
-  res.json(trades);
+  // Open trades get a charge estimate against the live mark; closed ones already carry
+  // the breakdown that was frozen when they closed.
+  res.json(trades.map((t) => (t.charges ? t : withCharges(t, getLastPrice(t.asset) ?? undefined))));
 });
 
 api.get("/positions", async (_req, res) => {
@@ -123,10 +144,14 @@ api.get("/trades/stats", async (_req, res) => {
   await refreshLedger();
   const trades = getTrades();
   const closed = trades.filter((t) => t.status === "CLOSED");
-  const wins = closed.filter((t) => (t.pnlUsd ?? 0) > 0);
-  const losses = closed.filter((t) => (t.pnlUsd ?? 0) < 0);
-  const grossWin = wins.reduce((sum, t) => sum + (t.pnlUsd ?? 0), 0);
-  const grossLoss = Math.abs(losses.reduce((sum, t) => sum + (t.pnlUsd ?? 0), 0));
+  // Net of fees, GST and TDS. Ranking a trade as a "win" on its gross number counts
+  // trades that actually lost money after charges, which is how a losing system reads
+  // as profitable on the dashboard.
+  const net = (t: (typeof closed)[number]) => (t.charges ?? chargesFor(t)).netPnlUsd;
+  const wins = closed.filter((t) => net(t) > 0);
+  const losses = closed.filter((t) => net(t) < 0);
+  const grossWin = wins.reduce((sum, t) => sum + net(t), 0);
+  const grossLoss = Math.abs(losses.reduce((sum, t) => sum + net(t), 0));
 
   res.json({
     total: trades.length,
@@ -135,7 +160,9 @@ api.get("/trades/stats", async (_req, res) => {
     wins: wins.length,
     losses: losses.length,
     winRate: closed.length ? wins.length / closed.length : 0,
-    netPnlUsd: closed.reduce((sum, t) => sum + (t.pnlUsd ?? 0), 0),
+    netPnlUsd: closed.reduce((sum, t) => sum + net(t), 0),
+    grossPnlUsd: closed.reduce((sum, t) => sum + (t.pnlUsd ?? 0), 0),
+    chargesUsd: closed.reduce((sum, t) => sum + (t.charges ?? chargesFor(t)).totalUsd, 0),
     avgRMultiple: closed.length
       ? closed.reduce((sum, t) => sum + (t.rMultiple ?? 0), 0) / closed.length
       : 0,
@@ -165,6 +192,8 @@ api.get("/activity/day", (req, res) => {
   }
   res.json(getDayDetail(date));
 });
+
+api.use("/research", researchRouter);
 
 api.get("/shadow", (_req, res) => {
   res.json(getShadowSummary());

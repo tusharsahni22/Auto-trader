@@ -28,15 +28,87 @@ interface StoreShape {
 function load(): StoreShape {
   if (!fs.existsSync(FILE)) return { trades: {}, equityCurve: {}, kv: {} };
   try {
-    return JSON.parse(fs.readFileSync(FILE, "utf-8"));
-  } catch {
+    const parsed = JSON.parse(fs.readFileSync(FILE, "utf-8"));
+    return { trades: parsed.trades ?? {}, equityCurve: parsed.equityCurve ?? {}, kv: parsed.kv ?? {} };
+  } catch (error) {
+    // A truncated or corrupt file must not silently become an empty ledger: keep the
+    // bytes so the history can be recovered by hand, and say loudly what happened.
+    const quarantine = `${FILE}.corrupt-${Date.now()}`;
+    try {
+      fs.copyFileSync(FILE, quarantine);
+      console.error(`[ledger] ${FILE} is unreadable (${(error as Error).message}); copied to ${quarantine}`);
+    } catch {
+      console.error(`[ledger] ${FILE} is unreadable and could not be quarantined:`, error);
+    }
     return { trades: {}, equityCurve: {}, kv: {} };
   }
+}
+
+/**
+ * Which of two copies of the same trade is newer.
+ *
+ * `updatedAt` decides it when both carry one. Older rows predate that field, so
+ * fall back to observable progress: a closed trade supersedes an open one, and
+ * more fills supersede fewer. Anything still tied keeps the incumbent.
+ */
+function isNewerTrade(candidate: Trade, incumbent: Trade): boolean {
+  const a = candidate.updatedAt ?? 0;
+  const b = incumbent.updatedAt ?? 0;
+  if (a !== b) return a > b;
+  if (candidate.status !== incumbent.status) return candidate.status === "CLOSED";
+  if ((candidate.fills?.length ?? 0) !== (incumbent.fills?.length ?? 0)) {
+    return (candidate.fills?.length ?? 0) > (incumbent.fills?.length ?? 0);
+  }
+  return (candidate.exitTime ?? 0) > (incumbent.exitTime ?? 0);
+}
+
+/**
+ * Union two ledgers. This replaced a straight assignment that cost real trades:
+ * whenever a MongoDB write failed (an Atlas blip, an IP allowlist change) the
+ * local store still held the trade, and the next read replaced the whole store
+ * with Mongo's older copy — then the debounced save wrote that shrunken store
+ * back over the JSON file. A trade could vanish from both within seconds.
+ *
+ * Merging makes a missing row mean "this copy has not heard about it yet",
+ * never "this row was deleted". Nothing in this system ever deletes a trade.
+ */
+export function mergeStores(base: StoreShape, incoming: StoreShape): { store: StoreShape; added: number; updated: number } {
+  const trades: Record<string, Trade> = { ...base.trades };
+  let added = 0;
+  let updated = 0;
+  for (const [id, trade] of Object.entries(incoming.trades ?? {})) {
+    const existing = trades[id];
+    if (!existing) {
+      trades[id] = trade;
+      added++;
+    } else if (isNewerTrade(trade, existing)) {
+      trades[id] = trade;
+      updated++;
+    }
+  }
+  return {
+    store: {
+      trades,
+      equityCurve: { ...base.equityCurve, ...(incoming.equityCurve ?? {}) },
+      // Counters and learning state live in kv; the remote copy wins per key,
+      // but a key only present locally survives.
+      kv: { ...base.kv, ...(incoming.kv ?? {}) },
+    },
+    added,
+    updated,
+  };
+}
+
+function applyStore(next: StoreShape) {
+  store.trades = next.trades;
+  store.equityCurve = next.equityCurve;
+  store.kv = next.kv;
 }
 
 const store: StoreShape = load();
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 let mongoReady = false;
+let lastPersistError: string | null = null;
 const STATE_ID = "main";
 const LEASE_ID = "engine-leader";
 const INSTANCE_ID = process.env.ENGINE_INSTANCE_ID ?? "local";
@@ -64,36 +136,48 @@ export async function initializeLedger() {
 
   const collection = stateCollection();
   const existing = await collection.findOne({ _id: STATE_ID });
-  if (existing) {
-    store.trades = existing.trades ?? {};
-    store.equityCurve = existing.equityCurve ?? {};
-    store.kv = existing.kv ?? {};
-    mongoReady = true;
-    console.log(`[ledger] loaded canonical MongoDB state (${Object.keys(store.trades).length} trades)`);
-    return;
-  }
+  const localTrades = Object.keys(store.trades).length;
 
-  const migrateFile = process.env.LEDGER_MIGRATE_LOCAL_FILE === "true";
-  const initial: StoreShape = migrateFile
-    ? { trades: store.trades, equityCurve: store.equityCurve, kv: store.kv }
-    : { trades: {}, equityCurve: {}, kv: {} };
-  await collection.updateOne({ _id: STATE_ID }, { $setOnInsert: initial }, { upsert: true });
-  const saved = await collection.findOne({ _id: STATE_ID });
-  store.trades = saved?.trades ?? {};
-  store.equityCurve = saved?.equityCurve ?? {};
-  store.kv = saved?.kv ?? {};
+  // Union, never replace. The old code assigned Mongo's document straight over the
+  // in-memory store, so any trade that had only ever been written locally — including
+  // every trade taken while Mongo was unreachable — was dropped on the next boot.
+  const merged = mergeStores(store, {
+    trades: existing?.trades ?? {},
+    equityCurve: existing?.equityCurve ?? {},
+    kv: existing?.kv ?? {},
+  });
+  applyStore(merged.store);
   mongoReady = true;
-  console.log(`[ledger] initialized canonical MongoDB state${migrateFile ? " from local JSON" : ""}`);
+
+  const total = Object.keys(store.trades).length;
+  console.log(
+    `[ledger] merged MongoDB state: ${total} trades (${localTrades} local, ${Object.keys(existing?.trades ?? {}).length} remote, ` +
+      `${merged.added} added from remote, ${merged.updated} refreshed)`
+  );
+
+  // Push the union straight back so both copies agree from here on.
+  if (!existing || merged.added !== Object.keys(existing.trades ?? {}).length || total !== Object.keys(existing.trades ?? {}).length) {
+    await persistMongo().catch((error) => console.error("[ledger] initial MongoDB sync failed:", error));
+  }
 }
 
-/** Refresh read-only API views so a second instance sees the leader's latest trades. */
+/**
+ * Refresh read-only API views so a second instance sees the leader's latest trades.
+ * Merges rather than replaces, for the reason described on `mergeStores`.
+ */
 export async function refreshLedger() {
   if (!mongoReady || !isMongoConnected()) return;
   const current = await stateCollection().findOne({ _id: STATE_ID });
   if (!current) return;
-  store.trades = current.trades ?? {};
-  store.equityCurve = current.equityCurve ?? {};
-  store.kv = current.kv ?? {};
+  const before = Object.keys(store.trades).length;
+  const merged = mergeStores(store, {
+    trades: current.trades ?? {},
+    equityCurve: current.equityCurve ?? {},
+    kv: current.kv ?? {},
+  });
+  applyStore(merged.store);
+  const after = Object.keys(store.trades).length;
+  if (after !== before) console.log(`[ledger] refresh: ${before} -> ${after} trades`);
 }
 
 /** Only the configured leader may run the strategy against the shared account. */
@@ -123,20 +207,66 @@ async function persistMongo() {
     { $set: { trades: store.trades, equityCurve: store.equityCurve, kv: store.kv } },
     { upsert: true }
   );
+  lastPersistError = null;
+}
+
+/**
+ * Write via a temporary file and rename. A direct write leaves a half-written
+ * JSON file if the process dies mid-write, and the next boot then reads a
+ * corrupt ledger — which used to mean starting from zero trades.
+ */
+function writeFileAtomic(contents: string) {
+  const tmp = `${FILE}.tmp`;
+  fs.writeFileSync(tmp, contents);
+  fs.renameSync(tmp, FILE);
 }
 
 function scheduleSave() {
   if (saveTimer) return;
   saveTimer = setTimeout(() => {
     saveTimer = null;
-    fs.writeFileSync(FILE, JSON.stringify(store));
-    void persistMongo().catch((error) => console.error("[ledger] MongoDB save failed:", error));
+    try {
+      writeFileAtomic(JSON.stringify(store));
+    } catch (error) {
+      lastPersistError = `file: ${(error as Error).message}`;
+      console.error("[ledger] local save failed:", error);
+    }
+    void persistMongo().catch((error) => {
+      lastPersistError = `mongo: ${error?.message ?? error}`;
+      console.error("[ledger] MongoDB save failed:", error);
+    });
   }, 250);
 }
 
 export function upsertTrade(t: Trade) {
+  t.updatedAt = Date.now();
   store.trades[t.id] = t;
   scheduleSave();
+}
+
+/** Trade count by source, for the ledger-health card on the dashboard. */
+export async function getLedgerHealth() {
+  const local = Object.keys(store.trades).length;
+  let remote: number | null = null;
+  let error: string | null = null;
+  if (mongoReady && isMongoConnected()) {
+    try {
+      const doc = await stateCollection().findOne({ _id: STATE_ID });
+      remote = Object.keys(doc?.trades ?? {}).length;
+    } catch (e: any) {
+      error = e?.message ?? String(e);
+    }
+  }
+  return {
+    trades: local,
+    remoteTrades: remote,
+    mongoConnected: isMongoConnected(),
+    file: FILE,
+    lastPersistError,
+    error,
+    /** Rows held here but not yet in MongoDB. Non-zero after a failed write, and self-heals. */
+    pendingSync: remote === null ? null : Math.max(0, local - remote),
+  };
 }
 
 export function getTrades(): Trade[] {

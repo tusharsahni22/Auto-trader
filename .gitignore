@@ -17,3 +17,11 @@ backend/data/
 
 # Local trading ledger (trades, balance, learned stats)
 data/
+
+# Research workspace (edge-discovery study): kept local and out of this repo.
+# It is a self-contained study — source, multi-GB market data, generated reports and
+# the experiment registry — with its own lifecycle, and its outputs would otherwise
+# churn a large diff on every run. backend/src/routes/research.ts serves its reports
+# when the folder is present locally and returns a 404 with an explanation when it
+# is not, so nothing here depends on it.
+research/

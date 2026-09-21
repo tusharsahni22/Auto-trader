@@ -8,6 +8,7 @@ import { detectArchetypes } from "../decision/archetypes.js";
 import { atr as _computeAtr } from "../lib/indicators.js";
 import type { ArchetypeCandidate } from "../decision/types.js";
 import { applyExchangeClose, finalizeClose, manageTrade } from "../lifecycle/manager.js";
+import { attachCharges } from "../services/tradeCharges.js";
 import { onTradeClosed } from "../learning/recalibrate.js";
 import { openShadow, updateShadows, getShadowSummary } from "../learning/shadow.js";
 import { checkEntryLiquidity, liquidityGateMode } from "../services/liquidity.js";
@@ -708,7 +709,16 @@ function persistTradeClose(trade: Trade, after?: Promise<void>) {
     const { mirrorCloseToDelta } = await import("../services/execution.js");
     await mirrorCloseToDelta(trade, (updatedTrade) => {
       if (updatedTrade.execution?.closeFillPrice) {
+        const before = updatedTrade.charges?.netPnlUsd ?? 0;
         applyExchangeClose(updatedTrade, updatedTrade.execution.closeFillPrice, updatedTrade.execution.exchangeRealizedPnlUsd, updatedTrade.execution.closeFeeUsd ?? 0);
+        // The exchange has now reported the real fill and commission, so the estimate
+        // credited to equity below is replaced by the actual figure.
+        const after = attachCharges(updatedTrade).netPnlUsd;
+        if (after !== before) {
+          state.equity += after - before;
+          persistEquity(after - before);
+          broadcast("equity", { time: Date.now(), equity: state.equity });
+        }
       }
       upsertTrade(updatedTrade);
       broadcast("trade_updated", updatedTrade);
@@ -717,8 +727,13 @@ function persistTradeClose(trade: Trade, after?: Promise<void>) {
     broadcast("trade_updated", trade);
   })();
 
-  state.equity += trade.realizedPnlUsd;
-  persistEquity(trade.realizedPnlUsd);
+  // Fees, GST and any TDS are real money leaving the wallet, so equity moves by the
+  // NET number. `realizedPnlUsd` stays gross for the calibration/learning path, which
+  // has always been trained on gross outcomes.
+  const charges = attachCharges(trade);
+  upsertTrade(trade);
+  state.equity += charges.netPnlUsd;
+  persistEquity(charges.netPnlUsd);
   onTradeClosed(trade);
   broadcast("trade_closed", trade);
   broadcast("equity", { time: Date.now(), equity: state.equity });

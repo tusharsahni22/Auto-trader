@@ -119,16 +119,16 @@ export const newsConfig = {
     .filter(Boolean),
   refreshSec: Number(process.env.NEWS_REFRESH_SEC ?? 180),
   /**
-   * The economic calendar is a weekly schedule behind a metered API (the free
-   * FCS tier allows 500 calls a month), so it is refreshed on its own far
-   * slower clock. Polling it at the headline rate burns the monthly quota in
-   * about a day.
+   * The calendar publishes a whole week at a time, so it needs a far slower clock
+   * than headlines. 30 minutes keeps forecast/actual revisions current without
+   * provoking the host's rate limiter, which bans for a sustained period once tripped.
    */
-  calendarRefreshSec: Number(process.env.NEWS_CALENDAR_REFRESH_SEC ?? 6 * 60 * 60),
+  calendarRefreshSec: Number(process.env.NEWS_CALENDAR_REFRESH_SEC ?? 30 * 60),
 };
 
 let lastCalendarFetch = 0;
 let calendarError: string | null = null;
+let calendarSource: 'forexfactory' | 'fcsapi' | null = null;
 
 function putEvent(event: CalendarEvent) {
   eventStore.set(event.eventId, event);
@@ -153,6 +153,52 @@ function pruneStaleEvents() {
   }
 }
 
+/**
+ * Reload the store from MongoDB at boot.
+ *
+ * Both upstreams fail closed in ways that last: ForexFactory answers 429 for a
+ * sustained period once it has been polled too hard, and the FCS free tier is
+ * capped at 500 calls a MONTH. Without this, a restart inside either window left
+ * the calendar completely empty with nothing to show, even though a perfectly good
+ * copy of the week was already sitting in the database.
+ */
+async function hydrateFromMongo(): Promise<number> {
+  try {
+    const { isMongoConnected } = await import('../db/mongodb.js');
+    if (!isMongoConnected()) return 0;
+    const { NewsEvent } = await import('../db/models/index.js');
+    const cutoff = new Date(Date.now() - RETENTION_MS);
+    const docs = await NewsEvent.find({ eventTime: { $gte: cutoff } }).lean();
+
+    let restored = 0;
+    for (const doc of docs as any[]) {
+      if (!doc?.eventId || eventStore.has(doc.eventId)) continue;
+      eventStore.set(doc.eventId, {
+        eventId: doc.eventId,
+        title: doc.title,
+        description: doc.description,
+        category: doc.category,
+        priority: doc.priority,
+        impactScore: doc.impactScore ?? 0,
+        eventTime: new Date(doc.eventTime).toISOString(),
+        publishedAt: new Date(doc.publishedAt ?? doc.eventTime).toISOString(),
+        source: doc.source ?? 'cache',
+        sourceUrl: doc.sourceUrl,
+        assets: doc.assets ?? [],
+        regions: doc.regions ?? [],
+        economicData: doc.economicData,
+        isActive: doc.isActive !== false,
+      });
+      restored++;
+    }
+    if (restored) console.log(`[newsCalendar] restored ${restored} cached events from MongoDB`);
+    return restored;
+  } catch (error) {
+    console.warn('[newsCalendar] cache restore skipped:', (error as Error).message);
+    return 0;
+  }
+}
+
 /** Mirrors an event into MongoDB when available. Never throws. */
 async function persistEvent(event: CalendarEvent): Promise<void> {
   try {
@@ -170,37 +216,166 @@ async function persistEvent(event: CalendarEvent): Promise<void> {
 }
 
 /**
- * Fetch economic calendar events from FCS API (free tier).
+ * ForexFactory's public weekly JSON, served by FairEconomy. No key, no quota, and
+ * it is the same schedule the retail world trades off. This is the primary source.
+ *
+ * Shape: { title, country (currency code), date (ISO with offset), impact, forecast, previous }.
  */
-async function fetchEconomicCalendar(): Promise<EconomicCalendarEvent[]> {
-  const API_KEY = process.env.ECONOMIC_CALENDAR_API_KEY;
+const FOREX_FACTORY_URL = 'https://nfs.faireconomy.media/ff_calendar_thisweek.json';
 
-  if (!API_KEY) {
-    console.warn('[newsCalendar] ECONOMIC_CALENDAR_API_KEY not set — economic events unavailable');
-    return [];
-  }
+interface ForexFactoryEvent {
+  title?: string;
+  country?: string;
+  date?: string;
+  impact?: string;
+  forecast?: string;
+  previous?: string;
+}
+
+/**
+ * The host answers 429 for a sustained period once it has been polled too often,
+ * so a failure must back off properly rather than retry on the next tick and renew
+ * the ban. Kept as a timestamp we refuse to fetch before.
+ */
+let calendarRetryAfter = 0;
+
+async function fetchForexFactoryCalendar(): Promise<EconomicCalendarEvent[]> {
+  if (Date.now() < calendarRetryAfter) return [];
 
   try {
-    const response = await fetch(
-      `https://fcsapi.com/api-v3/forex/economy_cal?access_key=${API_KEY}&from=${getToday()}&to=${getFutureDate(7)}`
-    );
-    if (!response.ok) throw new Error(`API returned ${response.status}`);
-    const data = (await response.json()) as { status?: boolean; msg?: string; response?: EconomicCalendarEvent[] };
-    if (!data.status) throw new Error(data.msg || 'Economic calendar API rejected the request');
+    const response = await fetch(FOREX_FACTORY_URL, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; auto-trader/1.0)' },
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (response.status === 429) {
+      calendarRetryAfter = Date.now() + 30 * 60_000;
+      throw new Error('rate limited by the calendar host (backing off for 30 minutes)');
+    }
+    if (!response.ok) throw new Error(`calendar feed returned ${response.status}`);
+
+    const raw = (await response.json()) as ForexFactoryEvent[];
+    if (!Array.isArray(raw)) throw new Error('calendar feed returned an unexpected shape');
+
+    const events = raw.flatMap((e, i): EconomicCalendarEvent[] => {
+      const when = e.date ? new Date(e.date) : null;
+      if (!when || Number.isNaN(when.getTime()) || !e.title) return [];
+      const currency = String(e.country ?? '').toUpperCase();
+      return [{
+        // The feed carries no id, so derive a stable one: the same event keeps its
+        // identity across refreshes instead of being re-inserted every few minutes.
+        id: `ff_${currency}_${when.getTime()}_${String(e.title).replace(/\W+/g, '').slice(0, 24)}_${i}`,
+        title: String(e.title),
+        indicator: String(e.title),
+        country: currency,
+        currency,
+        importance: IMPACT_TO_IMPORTANCE[String(e.impact ?? '').toLowerCase()] ?? '1',
+        // storeEconomicEvents appends "Z"; hand it an already-UTC wall-clock string.
+        date: when.toISOString().slice(0, 19).replace('T', ' '),
+        forecast: e.forecast || undefined,
+        previous: e.previous || undefined,
+      }];
+    });
+
     calendarError = null;
-    return data.response || [];
+    return events;
   } catch (error: any) {
-    calendarError = error?.message ?? String(error);
-    console.error('[newsCalendar] Failed to fetch economic calendar:', calendarError);
+    throw new Error(error?.message ?? String(error));
+  }
+}
+
+const IMPACT_TO_IMPORTANCE: Record<string, string> = {
+  high: '3',
+  medium: '2',
+  low: '1',
+  holiday: '0',
+};
+
+/** FCS is a paid, metered fallback used only if it is configured AND ForexFactory failed. */
+async function fetchFcsCalendar(): Promise<EconomicCalendarEvent[]> {
+  const API_KEY = process.env.ECONOMIC_CALENDAR_API_KEY;
+  if (!API_KEY) return [];
+
+  const response = await fetch(
+    `https://fcsapi.com/api-v3/forex/economy_cal?access_key=${API_KEY}&from=${getToday()}&to=${getFutureDate(7)}`,
+    { signal: AbortSignal.timeout(15_000) }
+  );
+  if (!response.ok) throw new Error(`FCS returned ${response.status}`);
+  const data = (await response.json()) as { status?: boolean; msg?: string; response?: EconomicCalendarEvent[] };
+  if (!data.status) throw new Error(data.msg || 'FCS rejected the request');
+  return data.response || [];
+}
+
+/**
+ * Economic calendar, free source first.
+ *
+ * This used to call FCS only, whose free tier allows 500 calls a MONTH — so the
+ * calendar was empty whenever the key was missing, wrong or spent, and the panel
+ * showed nothing with no explanation. ForexFactory needs no key at all.
+ */
+async function fetchEconomicCalendar(): Promise<EconomicCalendarEvent[]> {
+  try {
+    const events = await fetchForexFactoryCalendar();
+    if (events.length) {
+      calendarSource = 'forexfactory';
+      return events;
+    }
+    if (Date.now() < calendarRetryAfter) {
+      calendarError = 'calendar host is rate limiting; using the last good week';
+      return [];
+    }
+    throw new Error('calendar feed returned no events');
+  } catch (primaryError: any) {
+    const primaryMessage = primaryError?.message ?? String(primaryError);
+    try {
+      const fallback = await fetchFcsCalendar();
+      if (fallback.length) {
+        calendarSource = 'fcsapi';
+        calendarError = null;
+        console.warn(`[newsCalendar] ForexFactory failed (${primaryMessage}); served ${fallback.length} events from FCS`);
+        return fallback;
+      }
+      calendarError = primaryMessage;
+    } catch (fallbackError: any) {
+      calendarError = `${primaryMessage}; FCS fallback: ${fallbackError?.message ?? fallbackError}`;
+    }
+    console.error('[newsCalendar] economic calendar unavailable:', calendarError);
     return [];
   }
 }
 
-const RSS_FEEDS = [
+/**
+ * Crypto desks trade macro risk-on/off, so the mix is deliberately not crypto-only:
+ * a hawkish Fed headline moves BTC as surely as an ETF approval does. Every feed is
+ * public RSS, needs no key, and a dead one only costs its own stories.
+ * Override with NEWS_FEEDS as comma-separated `Name|url` pairs.
+ */
+const DEFAULT_RSS_FEEDS = [
   { url: 'https://www.coindesk.com/arc/outboundfeeds/rss/', name: 'CoinDesk' },
   { url: 'https://cointelegraph.com/rss', name: 'Cointelegraph' },
   { url: 'https://news.bitcoin.com/feed/', name: 'Bitcoin.com' },
+  { url: 'https://www.forexlive.com/feed/news', name: 'ForexLive' },
+  { url: 'https://www.fxstreet.com/rss/news', name: 'FXStreet' },
+  { url: 'https://decrypt.co/feed', name: 'Decrypt' },
+  { url: 'https://finance.yahoo.com/news/rssindex', name: 'Yahoo Finance' },
 ];
+
+function configuredFeeds(): { url: string; name: string }[] {
+  const raw = process.env.NEWS_FEEDS;
+  if (!raw) return DEFAULT_RSS_FEEDS;
+  const parsed = raw
+    .split(',')
+    .map((token) => token.trim())
+    .filter(Boolean)
+    .map((token) => {
+      const [name, url] = token.includes('|') ? token.split('|', 2) : ['', token];
+      const finalUrl = (url ?? '').trim();
+      return { name: name.trim() || new URL(finalUrl).hostname.replace(/^www\./, ''), url: finalUrl };
+    })
+    .filter((f) => f.url.startsWith('http'));
+  return parsed.length ? parsed : DEFAULT_RSS_FEEDS;
+}
+
+const RSS_FEEDS = configuredFeeds();
 
 function decodeXmlText(raw: string): string {
   return raw
@@ -512,7 +687,8 @@ export async function getUpcomingEvents(
   options: QueryOptions & { hoursAhead?: number; hoursBack?: number } = {}
 ): Promise<CalendarEvent[]> {
   if (eventStore.size === 0) {
-    await updateNewsCalendar();
+    await hydrateFromMongo();
+    if (eventStore.size === 0) await updateNewsCalendar();
   }
 
   const now = Date.now();
@@ -533,7 +709,8 @@ export async function getRecentNews(
   options: QueryOptions & { hoursBack?: number } = {}
 ): Promise<CalendarEvent[]> {
   if (eventStore.size === 0) {
-    await updateNewsCalendar();
+    await hydrateFromMongo();
+    if (eventStore.size === 0) await updateNewsCalendar();
   }
 
   const from = Date.now() - (options.hoursBack ?? 24) * 60 * 60 * 1000;
@@ -577,8 +754,13 @@ export function getCalendarStats() {
     recentCryptoNews: events.filter(
       (e) => e.category === 'CRYPTO' && new Date(e.publishedAt).getTime() >= now - 24 * 60 * 60 * 1000
     ).length,
-    economicCalendarConfigured: Boolean(process.env.ECONOMIC_CALENDAR_API_KEY),
+    // The free ForexFactory feed is the primary source, so the calendar is
+    // "configured" whether or not a paid FCS key exists.
+    economicCalendarConfigured: true,
+    economicCalendarSource: calendarSource,
+    economicCalendarFallbackConfigured: Boolean(process.env.ECONOMIC_CALENDAR_API_KEY),
     economicCalendarError: calendarError,
+    newsFeeds: RSS_FEEDS.map((f) => f.name),
     economicCalendarNextRefresh: lastCalendarFetch
       ? new Date(lastCalendarFetch + newsConfig.calendarRefreshSec * 1000).toISOString()
       : null,
@@ -593,9 +775,11 @@ export function startNewsCalendarUpdates(): void {
     return;
   }
 
-  void updateNewsCalendar().catch((e) =>
-    console.error('[newsCalendar] initial update failed:', e)
-  );
+  // Serve the cached week first, then refresh. A rate-limited or quota-exhausted
+  // upstream then degrades to "slightly stale" instead of "blank panel".
+  void hydrateFromMongo()
+    .then(() => updateNewsCalendar())
+    .catch((e) => console.error('[newsCalendar] initial update failed:', e));
 
   setInterval(() => {
     void updateHeadlines().catch((e) =>

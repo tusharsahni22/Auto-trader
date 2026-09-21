@@ -26,6 +26,59 @@ export function isLiveTradingEnabled(): boolean {
   return process.env.LIVE_TRADING === "true" && isDeltaExchangeEnabled();
 }
 
+/**
+ * Why orders are or are not reaching Delta.
+ *
+ * Two independent switches have to be on, and when either is off the engine keeps
+ * trading happily in simulation — which looks identical on the dashboard. This
+ * names the specific switch that is off so the answer is not a log-dive.
+ */
+export function getLiveTradingStatus() {
+  const flag = process.env.LIVE_TRADING === "true";
+  const credentials = isDeltaExchangeEnabled();
+  const enabled = flag && credentials;
+
+  const blockers: string[] = [];
+  if (!flag) {
+    blockers.push(
+      `LIVE_TRADING is "${process.env.LIVE_TRADING ?? "unset"}", not "true" — every trade is recorded locally and nothing is sent to Delta.`
+    );
+  }
+  if (!credentials) {
+    blockers.push("DELTA_EXCHANGE_API_KEY / DELTA_EXCHANGE_API_SECRET are not both set, so no request can be signed.");
+  }
+
+  return {
+    enabled,
+    liveTradingFlag: flag,
+    credentialsConfigured: credentials,
+    mode: enabled ? "LIVE" : "SIMULATED",
+    entryOrderType: ENTRY_ORDER_TYPE,
+    /** Only meaningful for LIMIT entries; a market order fills immediately. */
+    limitOrderTimeoutMs: ENTRY_ORDER_TYPE === "LIMIT" ? Number(process.env.LIMIT_ORDER_TIMEOUT_MS ?? 120_000) : null,
+    blockers,
+    /** Env changes are read at boot, so flipping the flag needs a backend restart. */
+    note: enabled
+      ? "Orders are mirrored to Delta as real orders."
+      : "Trades are simulated. Set the values below in .env and restart the backend to go live.",
+  };
+}
+
+/**
+ * How the opening order reaches Delta.
+ *
+ * LIMIT (default) rests at the mark and earns the cheaper maker fee, but a market
+ * that walks away never fills it: after LIMIT_ORDER_TIMEOUT_MS the order is
+ * cancelled and the trade is marked REJECTED, so the engine shows a position the
+ * exchange never had. That is the second most common reason for "live trading is
+ * on but nothing is on the exchange", after LIVE_TRADING simply being false.
+ *
+ * MARKET crosses the spread, so it effectively always fills, at the cost of the
+ * taker fee and some slippage. Set DELTA_ENTRY_ORDER_TYPE=market to choose it.
+ */
+const ENTRY_ORDER_TYPE: "LIMIT" | "MARKET" =
+  String(process.env.DELTA_ENTRY_ORDER_TYPE ?? "limit").toLowerCase() === "market" ? "MARKET" : "LIMIT";
+
 const RETRY_DELAYS_MS = [5_000, 15_000, 30_000, 60_000, 120_000];
 const configuredRetries = Number(process.env.DELTA_EXECUTION_MAX_RETRIES ?? RETRY_DELAYS_MS.length);
 const MAX_RETRIES = Number.isFinite(configuredRetries)
@@ -123,8 +176,8 @@ async function tryMirrorOpen(trade: Trade, onUpdate: ExecutionUpdate): Promise<v
       asset: trade.asset,
       direction: trade.direction,
       size: contracts,
-      orderType: "LIMIT",
-      limitPrice: mark,
+      orderType: ENTRY_ORDER_TYPE,
+      limitPrice: ENTRY_ORDER_TYPE === "LIMIT" ? mark : undefined,
     });
 
     const orderId: string | undefined = order?.id != null ? String(order.id) : undefined;
@@ -137,7 +190,12 @@ async function tryMirrorOpen(trade: Trade, onUpdate: ExecutionUpdate): Promise<v
     const pollStart = Date.now();
     let avgFillPrice: number | undefined;
 
-    if (orderId) {
+    // A market order is already done by the time the response comes back, so the
+    // poll-and-cancel loop below applies only to a resting limit order.
+    if (ENTRY_ORDER_TYPE === "MARKET") {
+      const reported = Number(order?.average_fill_price);
+      if (Number.isFinite(reported) && reported > 0) avgFillPrice = reported;
+    } else if (orderId) {
       const { getDeltaOrderHistory, cancelDeltaOrder } = await import("./deltaExchange.js");
       let filled = false;
 
