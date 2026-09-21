@@ -8,6 +8,8 @@ import {
   type BotState,
   type BotStats,
   type EngineRole,
+  type LedgerHealth,
+  type LiveTradingStatus,
 } from "./lib/api";
 import { useSocket } from "./lib/useSocket";
 import { bollingerOverlays, breakoutOverlay, emaOverlay, smaOverlay } from "./lib/indicators";
@@ -32,6 +34,10 @@ import OpenPositions from "./components/OpenPositions";
 import BotControl from "./components/BotControl";
 import BotDecisionLog from "./components/BotDecisionLog";
 import IndicatorBar from "./components/IndicatorBar";
+import AnalyticsProgress from "./components/AnalyticsProgress";
+import OrderHistory from "./components/OrderHistory";
+import TrainingMonitor from "./components/TrainingMonitor";
+import SystemStatus from "./components/SystemStatus";
 
 const ASSETS: Asset[] = ["BTCUSDT", "ETHUSDT"];
 
@@ -46,7 +52,7 @@ const DEFAULT_PRESETS: Record<PresetId, boolean> = {
   signals: true,
 };
 
-type BottomTab = "trades" | "bot" | "activity";
+type BottomTab = "orders" | "trades" | "training" | "bot" | "activity" | "research";
 
 export default function App() {
   const [asset, setAsset] = useState<Asset>("BTCUSDT");
@@ -72,8 +78,12 @@ export default function App() {
   const [botDecisions, setBotDecisions] = useState<BotDecision[]>([]);
   const [assetIndicators, setAssetIndicators] = useState<AssetIndicators[]>([]);
   const [presets, setPresets] = useState<Record<PresetId, boolean>>(DEFAULT_PRESETS);
-  const [bottomTab, setBottomTab] = useState<BottomTab>("trades");
+  const [bottomTab, setBottomTab] = useState<BottomTab>("orders");
   const [showTools, setShowTools] = useState(false);
+  const [live, setLive] = useState<LiveTradingStatus | undefined>();
+  const [ledger, setLedger] = useState<LedgerHealth | undefined>();
+  /** Bumped when a trade opens or closes so the analytics panels refetch at once. */
+  const [analyticsKey, setAnalyticsKey] = useState(0);
   // Remembered so the choice survives a reload.
   const [timezone, setTimezone] = useState<ChartTimezone>(
     () => (localStorage.getItem("chartTimezone") as ChartTimezone) ?? "local"
@@ -107,6 +117,8 @@ export default function App() {
     api.status().then((s) => {
       setEngine(s.engine);
       setEngineRole(s.role);
+      setLive(s.live);
+      setLedger(s.ledger);
       const byAsset: Record<string, ScanInfo> = {};
       for (const s2 of s.scans ?? []) byAsset[s2.asset] = s2;
       setScans(byAsset);
@@ -120,6 +132,8 @@ export default function App() {
       api.status().then((s) => {
         setEngine(s.engine);
         setEngineRole(s.role);
+        setLive(s.live);
+        setLedger(s.ledger);
       }).catch(() => {});
       refreshTrades();
       api.equityCurve().then(setEquityCurve).catch(() => {});
@@ -189,6 +203,9 @@ export default function App() {
       });
       setSelectedTrade((prev) => (prev && prev.id === t.id ? t : prev));
       if (event === "trade_closed") api.equityCurve().then(setEquityCurve);
+      // P&L, win rate, order history and the training monitor all change on any
+      // trade event, so refresh them together instead of waiting for their polls.
+      setAnalyticsKey((k) => k + 1);
     }
     if (event === "equity") {
       setEngine((prev) => (prev ? { ...prev, equity: (payload as { equity: number }).equity } : prev));
@@ -332,9 +349,12 @@ export default function App() {
   const activeTrade = selectedTrade ?? trades.find((t) => t.status === "OPEN") ?? null;
 
   const bottomTabs: { id: BottomTab; label: string; count: number }[] = [
+    { id: "orders", label: "Order history", count: trades.length },
     { id: "trades", label: "Trades", count: filteredTrades.length },
+    { id: "training", label: "Training monitor", count: 0 },
     { id: "bot", label: "Bot decisions", count: botDecisions.length },
     { id: "activity", label: "Activity", count: opportunities.length },
+    { id: "research", label: "Research", count: 0 },
   ];
 
   return (
@@ -366,6 +386,20 @@ export default function App() {
         </div>
           <EngineControls engine={engine} asset={asset} role={engineRole} />
       </header>
+
+      <SystemStatus live={live} ledger={ledger} />
+
+      {/* Open positions sit above everything else: an open position is the only
+          thing on this page that is currently costing or making money. */}
+      <OpenPositions
+        activeAsset={asset}
+        onSelect={(id) => setSelectedTrade(trades.find((t) => t.id === id) ?? null)}
+        onChanged={() => {
+          refreshTrades();
+          api.equityCurve().then(setEquityCurve);
+          setAnalyticsKey((k) => k + 1);
+        }}
+      />
 
       <StatCards engine={engine} trades={trades} balance={balance} />
 
@@ -439,15 +473,6 @@ export default function App() {
             </div>
           )}
 
-          <OpenPositions
-            activeAsset={asset}
-            onSelect={(id) => setSelectedTrade(trades.find((t) => t.id === id) ?? null)}
-            onChanged={() => {
-              refreshTrades();
-              api.equityCurve().then(setEquityCurve);
-            }}
-          />
-
           <div className="flex flex-col gap-2">
             <div className="section-label">Equity curve</div>
             <div className="h-[200px] rounded-lg border border-bg-border bg-bg-panel">
@@ -477,7 +502,10 @@ export default function App() {
             </div>
           </div>
 
-          <NewsCalendar hoursAhead={48} assets={[asset.replace("USDT", "")]} />
+          {/* Headlines and the scheduled macro calendar answer different questions,
+              so they get their own panels rather than sharing a tab strip. */}
+          <NewsCalendar mode="news" hoursAhead={48} assets={[asset.replace("USDT", "")]} />
+          <NewsCalendar mode="calendar" hoursAhead={72} assets={[asset.replace("USDT", "")]} />
 
           <div className="flex flex-col gap-2">
             <div className="section-label">Filters</div>
@@ -485,6 +513,8 @@ export default function App() {
           </div>
         </div>
       </div>
+
+      <AnalyticsProgress refreshKey={analyticsKey} />
 
       {/* One tabbed strip instead of three stacked lists — the page ends at a
           predictable height regardless of how much history has accumulated. */}
@@ -507,12 +537,17 @@ export default function App() {
           ))}
         </div>
 
-        <div className="max-h-[420px] overflow-auto">
+        <div className="max-h-[520px] overflow-auto">
+          {bottomTab === "orders" && <OrderHistory refreshKey={analyticsKey} />}
+          {bottomTab === "training" && <TrainingMonitor refreshKey={analyticsKey} />}
           {bottomTab === "trades" && (
             <TradeList trades={filteredTrades} onSelect={setSelectedTrade} selectedId={selectedTrade?.id} />
           )}
           {bottomTab === "bot" && <BotDecisionLog decisions={botDecisions} />}
           {bottomTab === "activity" && <ActivityPanel active={bottomTab === "activity"} />}
+          {bottomTab === "research" && (
+            <iframe title="Strategy research dashboard" src="/api/research/dashboard" className="h-[820px] w-full border-0" />
+          )}
         </div>
       </div>
     </div>

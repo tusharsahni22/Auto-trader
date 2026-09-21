@@ -92,6 +92,15 @@ export interface Trade {
 
   /** How and whether this trade reached a real exchange. */
   execution?: TradeExecution;
+
+  /**
+   * Delta fees, 18% GST on those fees, any TDS, and the resulting net and
+   * after-tax P&L. Closed trades carry the breakdown frozen at close; open
+   * trades get a live estimate against the current mark.
+   */
+  charges?: import("./api").TradeCharges;
+
+  updatedAt?: number;
 }
 
 export type ExecutionStatus = "SIMULATED" | "PENDING" | "FILLED" | "REJECTED" | "FAILED" | "CLOSED" | "CLOSE_FAILED";

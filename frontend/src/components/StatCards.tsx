@@ -13,9 +13,14 @@ interface Props {
 
 export default function StatCards({ engine, trades, balance }: Props) {
   const closed = trades.filter((t) => t.status === "CLOSED");
-  const wins = closed.filter((t) => (t.pnlUsd ?? 0) > 0);
+  // Net of Delta's fee, the 18% GST on it and any TDS. Counting a trade as a win on
+  // its gross P&L marks trades that actually lost money after costs as winners.
+  const net = (t: Trade) => t.charges?.netPnlUsd ?? t.pnlUsd ?? 0;
+  const wins = closed.filter((t) => net(t) > 0);
   const winRate = closed.length ? (wins.length / closed.length) * 100 : 0;
-  const netPnl = closed.reduce((sum, t) => sum + (t.pnlUsd ?? 0), 0);
+  const netPnl = closed.reduce((sum, t) => sum + net(t), 0);
+  const grossPnl = closed.reduce((sum, t) => sum + (t.pnlUsd ?? 0), 0);
+  const chargesPaid = closed.reduce((sum, t) => sum + (t.charges?.totalUsd ?? 0), 0);
   // A live exchange balance is more current than the engine snapshot, which is
   // only refetched on mount.
   const equity = balance?.source === "delta_exchange" ? balance.equity : engine?.equity ?? 0;
@@ -32,7 +37,10 @@ export default function StatCards({ engine, trades, balance }: Props) {
     {
       label: "Net P&L (closed)",
       value: fmtUsd(netPnl),
-      sub: `${closed.length} closed trades`,
+      sub:
+        chargesPaid > 0
+          ? `${closed.length} closed · ${fmtUsd(grossPnl)} gross − ${fmtUsd(chargesPaid)} charges`
+          : `${closed.length} closed trades`,
       tone: netPnl >= 0 ? "bull" : "bear",
     },
     {

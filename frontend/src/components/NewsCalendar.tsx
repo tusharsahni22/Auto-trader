@@ -25,6 +25,12 @@ interface NewsEvent {
 interface Props {
   hoursAhead?: number;
   assets?: string[];
+  /**
+   * "both" keeps the original tabbed panel. "news" and "calendar" render one feed
+   * only, so the dashboard can show market headlines and the economic schedule as
+   * two separate panels rather than two tabs competing for one column.
+   */
+  mode?: "both" | "news" | "calendar";
 }
 
 /** Impact drives the left rail and the source chip so severity scans down the column. */
@@ -69,12 +75,13 @@ function currencyOf(source: string) {
   return source.match(/\(([A-Z]{3})\)/)?.[1] ?? "—";
 }
 
-export default function NewsCalendar({ hoursAhead = 48, assets = ["BTC", "ETH"] }: Props) {
+export default function NewsCalendar({ hoursAhead = 48, assets = ["BTC", "ETH"], mode = "both" }: Props) {
   const [events, setEvents] = useState<NewsEvent[]>([]);
   const [blackout, setBlackout] = useState<NewsBlackout | null>(null);
   const [loading, setLoading] = useState(true);
   const [calendarError, setCalendarError] = useState<string | null>(null);
-  const [tab, setTab] = useState<"news" | "calendar">("calendar");
+  const [calendarSource, setCalendarSource] = useState<string | null>(null);
+  const [tab, setTab] = useState<"news" | "calendar">(mode === "news" ? "news" : "calendar");
   const [priorities, setPriorities] = useState<string[]>([]);
 
   const fetchEvents = async () => {
@@ -101,7 +108,10 @@ export default function NewsCalendar({ hoursAhead = 48, assets = ["BTC", "ETH"] 
     api.newsBlackout().then(setBlackout).catch(() => {});
     fetch("/api/news-calendar/stats")
       .then((r) => r.json())
-      .then((d) => setCalendarError(d.economicCalendarError ?? null))
+      .then((d) => {
+        setCalendarError(d.economicCalendarError ?? null);
+        setCalendarSource(d.economicCalendarSource ?? null);
+      })
       .catch(() => {});
     const id = setInterval(() => {
       fetchEvents();
@@ -118,13 +128,21 @@ export default function NewsCalendar({ hoursAhead = 48, assets = ["BTC", "ETH"] 
     .filter((e) => e.category !== "ECONOMIC")
     .sort((a, b) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime());
 
-  const rows = tab === "calendar" ? economic : headlines;
+  // A single-mode panel ignores the tab state entirely.
+  const view = mode === "both" ? tab : mode;
+  const rows = view === "calendar" ? economic : headlines;
+  const title = mode === "calendar" ? "Economic calendar" : mode === "news" ? "Market news" : "News & calendar";
 
   return (
     <div className="panel flex flex-col overflow-hidden">
       <div className="flex items-center justify-between border-b border-bg-border px-3 py-2">
-        <h2 className="section-label">Market news</h2>
+        <h2 className="section-label">{title}</h2>
         <span className="flex items-center gap-1.5 text-[11px] text-ink-faint">
+          {mode === "calendar" && calendarSource && (
+            <span className="text-[10px]" title="Source of the economic schedule">
+              {calendarSource === "forexfactory" ? "ForexFactory" : "FCS"}
+            </span>
+          )}
           <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-accent" />
           live
         </span>
@@ -143,26 +161,33 @@ export default function NewsCalendar({ hoursAhead = 48, assets = ["BTC", "ETH"] 
       )}
 
       <div className="flex items-center gap-1 border-b border-bg-border px-2 py-1.5">
-        {(
-          [
-            { id: "calendar", icon: CalendarClock, label: "Calendar", n: economic.length },
-            { id: "news", icon: Newspaper, label: "Headlines", n: headlines.length },
-          ] as const
-        ).map((t) => (
-          <button
-            key={t.id}
-            onClick={() => setTab(t.id)}
-            className={clsx(
-              "flex items-center gap-1 rounded px-2 py-1 text-[10px] font-semibold uppercase tracking-wider transition",
-              tab === t.id
-                ? "border border-bg-border bg-bg-raised text-ink"
-                : "border border-transparent text-ink-faint hover:text-ink-muted"
-            )}
-          >
-            <t.icon size={11} /> {t.label}
-            <span className="text-[9px] font-normal text-ink-faint">{t.n}</span>
-          </button>
-        ))}
+        {mode === "both" ? (
+          (
+            [
+              { id: "calendar", icon: CalendarClock, label: "Calendar", n: economic.length },
+              { id: "news", icon: Newspaper, label: "Headlines", n: headlines.length },
+            ] as const
+          ).map((t) => (
+            <button
+              key={t.id}
+              onClick={() => setTab(t.id)}
+              className={clsx(
+                "flex items-center gap-1 rounded px-2 py-1 text-[10px] font-semibold uppercase tracking-wider transition",
+                tab === t.id
+                  ? "border border-bg-border bg-bg-raised text-ink"
+                  : "border border-transparent text-ink-faint hover:text-ink-muted"
+              )}
+            >
+              <t.icon size={11} /> {t.label}
+              <span className="text-[9px] font-normal text-ink-faint">{t.n}</span>
+            </button>
+          ))
+        ) : (
+          <span className="flex items-center gap-1 px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-ink-faint">
+            {mode === "calendar" ? <CalendarClock size={11} /> : <Newspaper size={11} />}
+            {rows.length} {mode === "calendar" ? "events" : "headlines"}
+          </span>
+        )}
 
         <div className="ml-auto flex items-center gap-1">
           {["HIGH", "MEDIUM", "LOW"].map((p) => (
@@ -185,7 +210,7 @@ export default function NewsCalendar({ hoursAhead = 48, assets = ["BTC", "ETH"] 
           <p className="px-3 py-4 text-xs text-ink-faint">Loading…</p>
         ) : rows.length === 0 ? (
           <div className="px-3 py-4 text-xs text-ink-faint">
-            {tab === "calendar" ? (
+            {view === "calendar" ? (
               calendarError ? (
                 <span className="text-warn">Calendar unavailable — {calendarError}</span>
               ) : (
@@ -195,7 +220,7 @@ export default function NewsCalendar({ hoursAhead = 48, assets = ["BTC", "ETH"] 
               "No headlines right now."
             )}
           </div>
-        ) : tab === "calendar" ? (
+        ) : view === "calendar" ? (
           rows.map((e) => {
             const style = impactStyle(e.priority);
             const t = eventTime(e.eventTime);

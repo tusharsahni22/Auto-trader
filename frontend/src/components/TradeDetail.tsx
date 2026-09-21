@@ -37,7 +37,11 @@ export default function TradeDetail({ trade }: { trade: Trade | null }) {
   }
 
   const pnl = trade.pnlUsd ?? trade.realizedPnlUsd;
-  const tone = pnl >= 0 ? "text-bull" : "text-bear";
+  const charges = trade.charges;
+  // Lead with the net figure when it is known: the gross number is what the trade
+  // looked like, the net is what it was actually worth.
+  const headlinePnl = charges ? charges.netPnlUsd : pnl;
+  const netTone = headlinePnl >= 0 ? "text-bull" : "text-bear";
   const [ciLow, ciHigh] = trade.calibratedWinProbCI90;
 
   // ── Position size ──────────────────────────────────────────────────────────
@@ -78,13 +82,80 @@ export default function TradeDetail({ trade }: { trade: Trade | null }) {
   return (
     <div className="flex h-full flex-col gap-4 overflow-auto rounded-lg border border-bg-border bg-bg-panel p-4">
       <div>
-        <div className="text-xs uppercase tracking-wide text-ink-faint">Trade P&amp;L</div>
-        <div className={"mt-1 font-mono text-2xl " + tone}>{fmtUsd(pnl)}</div>
-        <div className={"text-xs " + tone}>
+        <div className="text-xs uppercase tracking-wide text-ink-faint">
+          Trade P&amp;L {charges && <span className="normal-case text-ink-faint/70">· net of charges</span>}
+        </div>
+        <div className={"mt-1 font-mono text-2xl " + netTone}>{fmtUsd(headlinePnl)}</div>
+        <div className={"text-xs " + netTone}>
           {trade.pnlPct !== null ? `${trade.pnlPct.toFixed(2)}%` : "—"}
           {trade.rMultiple !== null ? ` · ${trade.rMultiple.toFixed(2)}R` : ""}
+          {charges && <span className="text-ink-faint"> · gross {signedUsd(pnl)}</span>}
         </div>
       </div>
+
+      {/* Delta India charges every fill a trading fee, then 18% GST on that fee.
+          Gains are taxed separately at 30% + 4% cess under s.115BBH, so the
+          provision is shown apart from the charges that already left the wallet. */}
+      {charges && (
+        <div className="rounded-md border border-bg-border bg-bg-raised p-3">
+          <div className="flex items-center justify-between text-xs text-ink-faint">
+            <span>Charges &amp; tax {trade.status === "OPEN" && <span className="text-ink-faint/70">(if closed now)</span>}</span>
+            <span className="rounded bg-bg-panel px-1.5 py-0.5 text-[10px]">
+              {charges.estimated ? "estimated" : "from exchange"}
+            </span>
+          </div>
+
+          <div className="mt-2 grid grid-cols-2 gap-x-2 gap-y-0.5 text-xs">
+            <div className="text-ink-faint">Trading fee</div>
+            <div className="text-right font-mono text-ink-muted">
+              {fmtUsd(charges.entry.feeUsd + charges.exit.feeUsd)}
+            </div>
+
+            <div className="text-ink-faint">GST @ {(charges.rates.gstRate * 100).toFixed(0)}% of fee</div>
+            <div className="text-right font-mono text-ink-muted">
+              {fmtUsd(charges.entry.gstUsd + charges.exit.gstUsd)}
+            </div>
+
+            {charges.entry.tdsUsd + charges.exit.tdsUsd > 0 && (
+              <>
+                <div className="text-ink-faint">TDS @ {(charges.rates.tdsRate * 100).toFixed(2)}%</div>
+                <div className="text-right font-mono text-ink-muted">
+                  {fmtUsd(charges.entry.tdsUsd + charges.exit.tdsUsd)}
+                </div>
+              </>
+            )}
+
+            <div className="border-t border-bg-border pt-1 text-ink-muted">Total charges</div>
+            <div className="border-t border-bg-border pt-1 text-right font-mono text-warn">
+              −{fmtUsd(charges.totalUsd)}{" "}
+              <span className="text-[10px] text-ink-faint">₹{charges.totalInr.toFixed(0)}</span>
+            </div>
+
+            <div className="text-ink-muted">Net P&amp;L</div>
+            <div className={"text-right font-mono font-semibold " + netTone}>{signedUsd(charges.netPnlUsd)}</div>
+
+            {charges.incomeTaxProvisionUsd > 0 && (
+              <>
+                <div className="text-ink-faint">
+                  Income tax @ {(charges.rates.effectiveIncomeTaxRate * 100).toFixed(1)}%
+                </div>
+                <div className="text-right font-mono text-bear">−{fmtUsd(charges.incomeTaxProvisionUsd)}</div>
+
+                <div className="text-ink-muted">After tax</div>
+                <div className={"text-right font-mono " + (charges.afterTaxPnlUsd >= 0 ? "text-bull" : "text-bear")}>
+                  {signedUsd(charges.afterTaxPnlUsd)}
+                </div>
+              </>
+            )}
+          </div>
+
+          <p className="mt-2 text-[10px] leading-snug text-ink-faint">
+            {charges.incomeTaxProvisionUsd > 0
+              ? `Section 115BBH: ${(charges.rates.incomeTaxRate * 100).toFixed(0)}% plus ${(charges.rates.cessRate * 100).toFixed(0)}% cess on the gain, with no set-off against losing trades. A provision to set aside, not a filing.`
+              : "No income-tax provision on a losing trade — and under s.115BBH this loss cannot be set off against other gains either."}
+          </p>
+        </div>
+      )}
 
       <div className="rounded-md border border-bg-border bg-bg-raised p-3">
         <div className="flex items-center justify-between text-xs text-ink-faint">
