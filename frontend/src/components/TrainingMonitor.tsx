@@ -173,6 +173,28 @@ export default function TrainingMonitor({ refreshKey = 0 }: { refreshKey?: numbe
                 {(tax.rates.cessRate * 100).toFixed(0)}% cess and does not allow losses to be set off, so the base is the
                 winners alone. A provision for planning, not a filing.
               </p>
+
+              {/* Say which numbers are live and which are fallbacks, so an unreachable
+                  feed shows as stale rather than passing for a current quote. */}
+              {tax.provenance && (
+                <p className="text-[10px] leading-snug text-ink-faint">
+                  Fees{" "}
+                  <span className={tax.provenance.fees.source === "delta" ? "text-bull" : "text-warn"}>
+                    {tax.provenance.fees.source === "delta" ? "live from Delta" : "from config"}
+                  </span>
+                  {" · "}USD/INR {tax.rates.usdInr.toFixed(2)}{" "}
+                  <span className={tax.provenance.usdInr.source === "config" ? "text-warn" : "text-bull"}>
+                    {tax.provenance.usdInr.source === "config"
+                      ? "from config (feed unreachable)"
+                      : `live, ${
+                          tax.provenance.usdInr.fetchedAt
+                            ? new Date(tax.provenance.usdInr.fetchedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+                            : "—"
+                        }`}
+                  </span>
+                  {" · "}GST and tax rates are statutory, set in the Union Budget.
+                </p>
+              )}
             </div>
           </div>
         )}

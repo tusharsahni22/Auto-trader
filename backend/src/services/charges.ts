@@ -29,9 +29,12 @@ const num = (key: string, fallback: number): number => {
 };
 
 export const chargeConfig = {
-  /** Futures taker fee, fraction of notional. Delta India publishes 0.05%. */
+  /**
+   * Fallbacks only. services/rates.ts replaces these at boot with the commission
+   * rates Delta publishes for the account's own fee tier, and a filled order's
+   * reported commission overrides even those.
+   */
   takerFeeRate: num("DELTA_TAKER_FEE_RATE", 0.0005),
-  /** Futures maker fee, fraction of notional. Delta India publishes 0.02%. */
   makerFeeRate: num("DELTA_MAKER_FEE_RATE", 0.0002),
   /** GST on the trading fee (18% in India). Applies to the FEE only. */
   gstRate: num("INDIA_GST_RATE", 0.18),
@@ -46,7 +49,11 @@ export const chargeConfig = {
   incomeTaxRate: num("INDIA_VDA_TAX_RATE", 0.30),
   /** Health and education cess levied on the tax amount. */
   cessRate: num("INDIA_CESS_RATE", 0.04),
-  /** USD per INR is needed only to show an INR figure next to a USD-settled trade. */
+  /**
+   * USD per INR, used only to show an INR figure beside a USD-settled trade.
+   * Refreshed twice a day from a live FX feed by services/rates.ts; this is the
+   * value used before the first fetch lands and if every source is unreachable.
+   */
   usdInr: num("USD_INR_RATE", 88),
 };
 
@@ -105,7 +112,8 @@ export interface TradeCharges {
 export function sideCharges(
   notionalUsd: number,
   liquidity: "taker" | "maker",
-  exchangeFeeUsd?: number
+  exchangeFeeUsd?: number,
+  feeRates?: { makerFeeRate: number; takerFeeRate: number }
 ): SideCharges {
   const notional = Math.abs(notionalUsd);
   const fromExchange = exchangeFeeUsd !== undefined && Number.isFinite(exchangeFeeUsd) && exchangeFeeUsd > 0;
@@ -117,7 +125,8 @@ export function sideCharges(
     feeUsd = exchangeFeeUsd! / (1 + chargeConfig.gstRate);
     gstUsd = exchangeFeeUsd! - feeUsd;
   } else {
-    const rate = liquidity === "maker" ? chargeConfig.makerFeeRate : chargeConfig.takerFeeRate;
+    const rates = feeRates ?? { makerFeeRate: chargeConfig.makerFeeRate, takerFeeRate: chargeConfig.takerFeeRate };
+    const rate = liquidity === "maker" ? rates.makerFeeRate : rates.takerFeeRate;
     feeUsd = notional * rate;
     gstUsd = feeUsd * chargeConfig.gstRate;
   }
@@ -144,6 +153,8 @@ export interface ChargeInput {
   exitLiquidity?: "taker" | "maker";
   exchangeEntryFeeUsd?: number;
   exchangeExitFeeUsd?: number;
+  /** Delta's published rates for this product; falls back to the configured pair. */
+  feeRates?: { makerFeeRate: number; takerFeeRate: number };
 }
 
 /** Full round-trip charge and tax breakdown for one trade. */
@@ -153,8 +164,8 @@ export function computeTradeCharges(input: ChargeInput): TradeCharges {
   // estimate is not silently half the real cost.
   const exitNotional = (input.exitPrice ?? input.entryPrice) * input.quantity;
 
-  const entry = sideCharges(entryNotional, input.entryLiquidity ?? "maker", input.exchangeEntryFeeUsd);
-  const exit = sideCharges(exitNotional, input.exitLiquidity ?? "taker", input.exchangeExitFeeUsd);
+  const entry = sideCharges(entryNotional, input.entryLiquidity ?? "maker", input.exchangeEntryFeeUsd, input.feeRates);
+  const exit = sideCharges(exitNotional, input.exitLiquidity ?? "taker", input.exchangeExitFeeUsd, input.feeRates);
 
   const totalUsd = entry.totalUsd + exit.totalUsd;
   const netPnlUsd = input.grossPnlUsd - totalUsd;
@@ -170,8 +181,9 @@ export function computeTradeCharges(input: ChargeInput): TradeCharges {
     incomeTaxProvisionUsd,
     afterTaxPnlUsd: netPnlUsd - incomeTaxProvisionUsd,
     rates: {
-      takerFeeRate: chargeConfig.takerFeeRate,
-      makerFeeRate: chargeConfig.makerFeeRate,
+      // Report the rates this calculation actually used, not the configured fallbacks.
+      takerFeeRate: input.feeRates?.takerFeeRate ?? chargeConfig.takerFeeRate,
+      makerFeeRate: input.feeRates?.makerFeeRate ?? chargeConfig.makerFeeRate,
       gstRate: chargeConfig.gstRate,
       tdsRate: chargeConfig.tdsRate,
       incomeTaxRate: chargeConfig.incomeTaxRate,

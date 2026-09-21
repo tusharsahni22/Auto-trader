@@ -9,6 +9,7 @@
 
 import type { Trade } from "../types.js";
 import { computeTradeCharges, type TradeCharges } from "./charges.js";
+import { getFeeRates } from "./rates.js";
 
 /**
  * Entries rest as limit orders at the mark, so they usually earn the maker rate.
@@ -39,6 +40,7 @@ export function chargesFor(trade: Trade, markPrice?: number): TradeCharges {
     exitLiquidity: exitLiquidity(trade),
     exchangeEntryFeeUsd: trade.execution?.entryFeeUsd,
     exchangeExitFeeUsd: trade.execution?.closeFeeUsd,
+    feeRates: getFeeRates(trade.asset),
   });
 }
 

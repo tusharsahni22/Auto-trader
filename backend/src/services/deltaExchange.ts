@@ -276,6 +276,9 @@ interface DeltaProduct {
   symbol: string;
   contract_value: string;
   tick_size: string;
+  /** Published commission rates for the account's fee tier, as decimal fractions. */
+  maker_commission_rate?: string;
+  taker_commission_rate?: string;
 }
 
 let productCache: Map<string, DeltaProduct> | null = null;

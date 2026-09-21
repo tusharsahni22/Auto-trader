@@ -7,6 +7,7 @@ import { api } from "./routes/api.js";
 import { initEngine, reloadPersistedState, pauseEngineForShutdown, resumeEngineIfWasRunning, setBroadcaster } from "./engine/index.js";
 import { initializeLedger } from "./db.js";
 import { startNewsCalendarUpdates, setNewsCalendarBroadcaster } from "./services/newsCalendar.js";
+import { startRateRefresh } from "./services/rates.js";
 import { setBotBroadcaster } from "./bot/scheduler.js";
 import { getMarketFeedHealth } from "./marketData.js";
 
@@ -108,6 +109,9 @@ server.listen(PORT, async () => {
   }
 
   startNewsCalendarUpdates();
+  // Replace the configured fee/FX fallbacks with Delta's published commission rates
+  // and a live USD/INR quote. Both degrade to the .env values if unreachable.
+  startRateRefresh();
   await initEngine();
   if (await resumeEngineIfWasRunning()) {
     console.log("[server] engine initialized and started automatically (set AUTO_START_ENGINE=false to disable)");

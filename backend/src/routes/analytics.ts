@@ -4,6 +4,7 @@ import { getLastPrice } from "../marketData.js";
 import { getActivity, dateKey } from "../stats/activity.js";
 import { chargesFor } from "../services/tradeCharges.js";
 import { chargeConfig, effectiveIncomeTaxRate, financialYear, taxSummary } from "../services/charges.js";
+import { getFeeRates, rateProvenance } from "../services/rates.js";
 import type { Trade } from "../types.js";
 
 /**
@@ -320,8 +321,7 @@ analyticsRouter.get("/tax", async (req, res) => {
       totalUsd: charges.reduce((s, c) => s + c.totalUsd, 0),
     },
     rates: {
-      takerFeeRate: chargeConfig.takerFeeRate,
-      makerFeeRate: chargeConfig.makerFeeRate,
+      ...getFeeRates(),
       gstRate: chargeConfig.gstRate,
       tdsRate: chargeConfig.tdsRate,
       incomeTaxRate: chargeConfig.incomeTaxRate,
@@ -329,6 +329,8 @@ analyticsRouter.get("/tax", async (req, res) => {
       effectiveIncomeTaxRate: effectiveIncomeTaxRate(),
       usdInr: chargeConfig.usdInr,
     },
+    /** Where each rate came from: a live feed, or the configured fallback. */
+    provenance: rateProvenance(),
     estimated: charges.some((c) => c.estimated),
   });
 });

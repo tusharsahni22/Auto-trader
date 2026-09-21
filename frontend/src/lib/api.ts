@@ -330,6 +330,12 @@ export interface TaxPosition {
   note: string;
   charges: { tradingFeeUsd: number; gstUsd: number; tdsUsd: number; totalUsd: number };
   rates: TradeCharges["rates"];
+  /** Where each rate came from — a live feed, or the configured fallback. */
+  provenance?: {
+    usdInr: { value: number; source: string; fetchedAt: number | null; error: string | null };
+    fees: { source: string; fetchedAt: number | null; error: string | null };
+    statutory: { source: string; note: string };
+  };
   estimated: boolean;
 }
 
