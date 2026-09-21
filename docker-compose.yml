@@ -13,10 +13,11 @@ services:
     image: ${DOCKERHUB_IMAGE:-tusharsahni22/auto-trader}:${BACKEND_TAG:-backend-latest}
     ports:
       - "${BACKEND_PORT:-4000}:4000"
+    # Short form on purpose: the `path:`/`required:` long form needs Compose 2.24+,
+    # and this has to parse on whatever version the server happens to run. A missing
+    # .env fails the deploy loudly, which beats silently booting on defaults.
     env_file:
-      # Optional: the stack still starts on defaults if no .env is present.
-      - path: .env
-        required: false
+      - .env
     environment:
       NODE_ENV: production
       PORT: 4000
