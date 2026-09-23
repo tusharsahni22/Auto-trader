@@ -43,3 +43,17 @@ body {
     @apply border-accent/50 bg-accent/15 text-accent;
   }
 }
+
+.chart-wrapper {
+  height: 300px;
+}
+@media (min-width: 640px) {
+  .chart-wrapper {
+    height: 400px;
+  }
+}
+@media (min-width: 1024px) {
+  .chart-wrapper {
+    height: 460px;
+  }
+}

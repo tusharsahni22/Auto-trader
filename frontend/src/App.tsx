@@ -451,7 +451,7 @@ export default function App() {
             candleCount={candles.length}
           />
 
-          <div className="h-[300px] overflow-hidden rounded-lg border border-bg-border bg-bg-panel sm:h-[400px] lg:h-[460px]">
+          <div className="chart-wrapper w-full overflow-hidden rounded-lg border border-bg-border bg-bg-panel">
             {candles.length === 0 ? (
               <div className="flex h-full items-center justify-center text-sm text-ink-faint">
                 {candleSource === "unavailable" ? "Candle data unavailable" : "Loading candles…"}
