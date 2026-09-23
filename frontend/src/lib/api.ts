@@ -356,6 +356,7 @@ async function mutate<T>(res: Response): Promise<T> {
 async function json<T>(res: Response): Promise<T> {
   const body = await res.json().catch(() => null) as { error?: string } | null;
   if (!res.ok) throw new Error(body?.error ?? `${res.status} ${res.statusText}`);
+  if (body === null) throw new Error(`Empty or invalid JSON response from ${res.url}`);
   return body as T;
 }
 

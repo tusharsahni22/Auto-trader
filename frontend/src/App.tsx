@@ -101,22 +101,24 @@ export default function App() {
     candlesRef.current = candles;
   }, [candles]);
 
-  const refreshTrades = () => api.trades().then(setTrades).catch(() => {});
+  const refreshTrades = () => api.trades().then((t) => setTrades(t || [])).catch(() => {});
 
   const refreshBot = () => {
     api
       .botStatus()
       .then((r) => {
+        if (!r) return;
         setBot(r.bot);
         setBotStats(r.stats);
       })
       .catch(() => {});
-    api.botDecisions(50).then((r) => setBotDecisions(r.decisions)).catch(() => {});
-    api.botIndicators().then((r) => setAssetIndicators(r.indicators)).catch(() => {});
+    api.botDecisions(50).then((r) => setBotDecisions(r?.decisions || [])).catch(() => {});
+    api.botIndicators().then((r) => setAssetIndicators(r?.indicators || [])).catch(() => {});
   };
 
   useEffect(() => {
     api.status().then((s) => {
+      if (!s) return;
       setEngine(s.engine);
       setEngineRole(s.role);
       setLive(s.live);
@@ -125,14 +127,15 @@ export default function App() {
       const byAsset: Record<string, ScanInfo> = {};
       for (const s2 of s.scans ?? []) byAsset[s2.asset] = s2;
       setScans(byAsset);
-    });
+    }).catch(() => {});
     refreshTrades();
-    api.equityCurve().then(setEquityCurve);
-    api.opportunities().then(setOpportunities);
+    api.equityCurve().then((t) => setEquityCurve(t || [])).catch(() => {});
+    api.opportunities().then((t) => setOpportunities(t || [])).catch(() => {});
 
     const refreshBalance = () => api.balance().then(setBalance).catch(() => {});
     const refreshSharedState = () => {
       api.status().then((s) => {
+        if (!s) return;
         setEngine(s.engine);
         setEngineRole(s.role);
         setLive(s.live);
@@ -140,7 +143,7 @@ export default function App() {
         setServerBlockers(s.stopBlockers ?? []);
       }).catch(() => {});
       refreshTrades();
-      api.equityCurve().then(setEquityCurve).catch(() => {});
+      api.equityCurve().then((t) => setEquityCurve(t || [])).catch(() => {});
     };
     refreshBalance();
     const balanceId = setInterval(refreshBalance, 30_000);
@@ -164,6 +167,7 @@ export default function App() {
     api
       .marketCandles(asset, resolution, 500)
       .then((r) => {
+        if (!r) return;
         setCandles(r.candles);
         setCandleSource(r.source);
         if (r.candles.length) setLastPrice(r.candles[r.candles.length - 1].close);
@@ -173,9 +177,10 @@ export default function App() {
 
   useEffect(() => {
     api.regime(asset).then((r) => {
+      if (!r) return;
       setRegime(r.regime);
       setFundingRate(r.fundingRate);
-    });
+    }).catch(() => {});
   }, [asset]);
 
   useSocket((event, payload) => {
@@ -206,7 +211,7 @@ export default function App() {
         return [t, ...prev];
       });
       setSelectedTrade((prev) => (prev && prev.id === t.id ? t : prev));
-      if (event === "trade_closed") api.equityCurve().then(setEquityCurve);
+      if (event === "trade_closed") api.equityCurve().then((t) => setEquityCurve(t || [])).catch(() => {});
       // P&L, win rate, order history and the training monitor all change on any
       // trade event, so refresh them together instead of waiting for their polls.
       setAnalyticsKey((k) => k + 1);
@@ -219,7 +224,7 @@ export default function App() {
     }
     if (event === "bot_decision") {
       setBotDecisions((prev) => [payload as BotDecision, ...prev].slice(0, 50));
-      api.botIndicators().then((r) => setAssetIndicators(r.indicators)).catch(() => {});
+      api.botIndicators().then((r) => setAssetIndicators(r?.indicators || [])).catch(() => {});
     }
     if (event === "bot_state") setBot(payload as BotState);
     if (event === "scan") {
@@ -234,14 +239,16 @@ export default function App() {
       api
         .marketCandles(asset, resolution, 500)
         .then((r) => {
+          if (!r) return;
           setCandles(r.candles);
           setCandleSource(r.source);
         })
         .catch(() => {});
       api.regime(asset).then((r) => {
+        if (!r) return;
         setRegime(r.regime);
         setFundingRate(r.fundingRate);
-      });
+      }).catch(() => {});
     }, 15_000);
     return () => clearInterval(id);
   }, [asset, resolution]);
@@ -414,7 +421,7 @@ export default function App() {
         onSelect={(id) => setSelectedTrade(trades.find((t) => t.id === id) ?? null)}
         onChanged={() => {
           refreshTrades();
-          api.equityCurve().then(setEquityCurve);
+          api.equityCurve().then((t) => setEquityCurve(t || [])).catch(() => {});
           setAnalyticsKey((k) => k + 1);
         }}
       />
