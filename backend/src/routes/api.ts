@@ -87,7 +87,7 @@ api.post("/engine/stop", (req, res) => {
     res.status(409).json({
       ok: false,
       code: "TRADES_OPEN",
-      error: `Cannot stop the engine while trades are ongoing: ${blockers.map((b) => b.detail).join("; ")}. Close them first.`,
+      error: `Cannot stop the engine while trades are ongoing: ${blockers.map((b) => b.detail).join("; ")}. Close ${blockers.length === 1 ? "it" : "them"} first.`,
       blockers,
     });
     return;

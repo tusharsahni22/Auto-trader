@@ -491,16 +491,11 @@ export default function App() {
             </div>
           )}
 
-          {/* The two flexible boxes (this one and Opportunities) grow to absorb whatever
-              height the taller column has, so both columns end together. Their content is
-              pinned absolutely: otherwise a chart or scrolling list counts toward the
-              column's intrinsic height and the pair inflate each other without bound. */}
-          <div className="flex flex-col gap-2 xl:flex-1">
+          {/* Fixed height equity curve to prevent infinite height expansion loop with grid */}
+          <div className="flex flex-col gap-2">
             <div className="section-label">Equity curve</div>
-            <div className="relative h-[200px] rounded-lg border border-bg-border bg-bg-panel xl:h-auto xl:min-h-[200px] xl:flex-1">
-              <div className="absolute inset-0">
-                <PnlChart points={equityCurve} timezone={timezone} />
-              </div>
+            <div className="h-[200px] rounded-lg border border-bg-border bg-bg-panel">
+              <PnlChart points={equityCurve} timezone={timezone} />
             </div>
           </div>
         </div>
@@ -525,10 +520,8 @@ export default function App() {
               <div className="section-label">Opportunities</div>
               <span className="text-[11px] text-ink-faint">{opportunities.length}</span>
             </div>
-            <div className="relative h-[260px] xl:h-auto xl:min-h-[260px] xl:flex-1">
-              <div className="h-full xl:absolute xl:inset-0">
-                <OpportunityFeed opportunities={opportunities} />
-              </div>
+            <div className="h-[260px] xl:h-full xl:min-h-[260px]">
+              <OpportunityFeed opportunities={opportunities} />
             </div>
           </div>
         </div>

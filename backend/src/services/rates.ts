@@ -128,8 +128,10 @@ export function rateProvenance() {
 }
 
 /** Warm both at boot, then keep FX on a slow timer. Never throws. */
-export function startRateRefresh(assets?: string[]): void {
-  void refreshFxRate().catch(() => {});
-  void refreshDeltaFeeRates(assets).catch(() => {});
+export async function startRateRefresh(assets?: string[]): Promise<void> {
+  await Promise.all([
+    refreshFxRate().catch(() => {}),
+    refreshDeltaFeeRates(assets).catch(() => {})
+  ]);
   setInterval(() => void refreshFxRate().catch(() => {}), FX_REFRESH_MS);
 }

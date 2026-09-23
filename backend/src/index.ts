@@ -99,6 +99,17 @@ server.listen(PORT, async () => {
   logStartupConfig();
   console.log(`[server] listening on :${PORT}`);
 
+  const originalLog = console.log;
+  const initLogs: string[] = [];
+  console.log = (...args) => {
+    const msg = args.map(a => String(a)).join(" ");
+    if (msg.startsWith("[mongodb]") || msg.startsWith("[ledger]") || msg.startsWith("[exchange]") || msg.startsWith("[rates]") || msg.startsWith("[engine]") || msg.startsWith("[newsCalendar]")) {
+      initLogs.push(msg);
+    } else {
+      originalLog(...args);
+    }
+  };
+
   if (connectMongoDB) {
     try {
       await connectMongoDB();
@@ -109,10 +120,6 @@ server.listen(PORT, async () => {
     }
   }
 
-  // Prove the exchange accepts an authenticated request before any signal can
-  // fire. An IP allowlist that no longer contains this host is the usual cause,
-  // and it is invisible until an order silently fails — so it is checked here
-  // and reported with the exact IP Delta rejected.
   if (process.env.DELTA_EXCHANGE_API_KEY && process.env.DELTA_EXCHANGE_API_SECRET) {
     const health = await preflight();
     if (!health.healthy && process.env.LIVE_TRADING === "true") {
@@ -120,12 +127,23 @@ server.listen(PORT, async () => {
     }
   }
 
-  startNewsCalendarUpdates();
-  // Replace the configured fee/FX fallbacks with Delta's published commission rates
-  // and a live USD/INR quote. Both degrade to the .env values if unreachable.
-  startRateRefresh();
+  await startNewsCalendarUpdates();
+  await startRateRefresh();
   await initEngine();
-  if (await resumeEngineIfWasRunning()) {
+  const wasRunning = await resumeEngineIfWasRunning();
+
+  console.log = originalLog;
+
+  const maxWidth = Math.max(...initLogs.map(l => l.length), 50);
+  console.log("\n[server] ┌" + "─".repeat(maxWidth + 2) + "┐");
+  console.log("[server] │ " + "API & Service Status".padEnd(maxWidth) + " │");
+  console.log("[server] ├" + "─".repeat(maxWidth + 2) + "┤");
+  for (const log of initLogs) {
+    console.log("[server] │ " + log.padEnd(maxWidth) + " │");
+  }
+  console.log("[server] └" + "─".repeat(maxWidth + 2) + "┘\n");
+
+  if (wasRunning) {
     console.log("[server] engine initialized and started automatically (set AUTO_START_ENGINE=false to disable)");
   } else {
     console.log("[server] engine initialized (stopped — call /api/engine/start)");

@@ -1,8 +1,9 @@
 FROM node:20-slim
 WORKDIR /app
-ENV NODE_ENV=development
 COPY package.json package-lock.json ./
 RUN npm ci
 COPY . .
+RUN npm run build
+RUN npm install -g serve
 EXPOSE 5173
-CMD ["npm", "run", "dev"]
+CMD ["serve", "-s", "dist", "-l", "tcp://0.0.0.0:5173"]

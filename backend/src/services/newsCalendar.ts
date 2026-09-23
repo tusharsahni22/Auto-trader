@@ -354,7 +354,6 @@ const DEFAULT_RSS_FEEDS = [
   { url: 'https://cointelegraph.com/rss', name: 'Cointelegraph' },
   { url: 'https://news.bitcoin.com/feed/', name: 'Bitcoin.com' },
   { url: 'https://www.forexlive.com/feed/news', name: 'ForexLive' },
-  { url: 'https://www.fxstreet.com/rss/news', name: 'FXStreet' },
   { url: 'https://decrypt.co/feed', name: 'Decrypt' },
   { url: 'https://finance.yahoo.com/news/rssindex', name: 'Yahoo Finance' },
 ];
@@ -769,17 +768,18 @@ export function getCalendarStats() {
 }
 
 /** Warms the store at boot and refreshes it every 5 minutes. */
-export function startNewsCalendarUpdates(): void {
+export async function startNewsCalendarUpdates(): Promise<void> {
   if (!newsConfig.enabled) {
     console.log("[newsCalendar] disabled via NEWS_ENABLED=false");
     return;
   }
 
-  // Serve the cached week first, then refresh. A rate-limited or quota-exhausted
-  // upstream then degrades to "slightly stale" instead of "blank panel".
-  void hydrateFromMongo()
-    .then(() => updateNewsCalendar())
-    .catch((e) => console.error('[newsCalendar] initial update failed:', e));
+  try {
+    await hydrateFromMongo();
+    await updateNewsCalendar();
+  } catch (e) {
+    console.error('[newsCalendar] initial update failed:', e);
+  }
 
   setInterval(() => {
     void updateHeadlines().catch((e) =>
