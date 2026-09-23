@@ -271,8 +271,17 @@ export async function getDeltaFills(productId?: number): Promise<any[]> {
  */
 export async function getDeltaTicker(symbol: string): Promise<any> {
   try {
-    const result = await deltaRequest('GET', `/v2/tickers/${symbol}`);
-    return result.result;
+    try {
+      const result = await deltaRequest('GET', `/v2/tickers/${symbol}`);
+      if (result && result.result) return result.result;
+    } catch (e) {
+      const all = await deltaRequest('GET', '/v2/tickers?contract_types=perpetual_futures');
+      if (all && Array.isArray(all.result)) {
+        const found = all.result.find((t: any) => t.symbol === symbol);
+        if (found) return found;
+      }
+      throw e;
+    }
   } catch (error: any) {
     console.error('[deltaExchange] Failed to get ticker:', error);
     throw error;
