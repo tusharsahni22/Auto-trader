@@ -26,7 +26,7 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       AGENTS_ENABLED: ${AGENTS_ENABLED:-false}
       ENGINE_INSTANCE_ID: ${ENGINE_INSTANCE_ID:-local}
-      ENGINE_LEADER_ID: ${ENGINE_LEADER_ID:-domain}
+      ENGINE_LEADER_ID: ${ENGINE_LEADER_ID:-local}
       LEDGER_MIGRATE_LOCAL_FILE: ${LEDGER_MIGRATE_LOCAL_FILE:-false}
     volumes:
       - trader_data:/app/data
