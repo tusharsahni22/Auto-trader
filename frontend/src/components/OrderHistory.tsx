@@ -110,10 +110,74 @@ export default function OrderHistory({ refreshKey = 0 }: { refreshKey?: number }
             One row per trade — entry to exit. P/L is net of fee, GST and TDS. Click a row for the full charge split.
           </p>
         </div>
-        <span className="text-[11px] text-ink-faint">{data.total} trades</span>
+        <span className="shrink-0 whitespace-nowrap text-[11px] text-ink-faint">{data.total} trades</span>
       </div>
 
-      <div className="overflow-x-auto">
+      {/* Phones and tablets get a card per trade. The 10-column table needs ~900px, so on
+          a phone it scrolled sideways and the column that matters most, P/L, sat
+          off-screen. */}
+      <div className="grid grid-cols-1 gap-2 px-2 pb-2 md:grid-cols-2 lg:hidden">
+        {data.rows.map((r) => (
+          <div key={r.id} className="overflow-hidden rounded-lg border border-bg-border bg-bg-raised/40">
+            <button
+              type="button"
+              onClick={() => setExpanded(expanded === r.id ? null : r.id)}
+              className="flex w-full flex-col gap-1.5 px-3 py-2.5 text-left"
+              aria-expanded={expanded === r.id}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex min-w-0 items-center gap-1.5">
+                  <span
+                    className={clsx(
+                      "rounded px-1.5 py-0.5 text-[10px] font-semibold",
+                      r.direction === "LONG" ? "bg-bull/15 text-bull" : "bg-bear/15 text-bear"
+                    )}
+                  >
+                    {r.direction}
+                  </span>
+                  <span className="text-xs font-semibold text-ink">{r.asset.replace("USDT", "")}</span>
+                  <span
+                    className={clsx(
+                      "rounded px-1.5 py-0.5 text-[10px]",
+                      r.status === "OPEN" ? "bg-accent/15 text-accent" : "bg-bg-raised text-ink-muted"
+                    )}
+                  >
+                    {r.status === "OPEN" ? "Open" : "Closed"}
+                  </span>
+                  {r.venue === "DELTA" && <span className="text-[9px] text-bull">live</span>}
+                </div>
+                <div className={clsx("shrink-0 text-right font-mono text-sm font-semibold", tone(r.netPnlUsd))}>
+                  {r.netPnlUsd === null ? "—" : signed(r.netPnlUsd)}
+                  {r.pnlPct !== null && r.netPnlUsd !== null && (
+                    <div className="text-[10px] font-normal text-ink-faint">{r.pnlPct.toFixed(2)}%</div>
+                  )}
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between gap-2 font-mono text-[11px] text-ink-muted">
+                <span>
+                  {fmt(r.entryPrice)} → {r.exitPrice ? fmt(r.exitPrice) : "—"}
+                </span>
+                <span className="text-ink-faint">{r.lots !== null ? `${r.lots} lots` : "—"}</span>
+              </div>
+
+              <div className="flex items-center justify-between gap-2 text-[10px] text-ink-faint">
+                <span className="truncate">
+                  {when(r.openedAt)} → {when(r.closedAt)}
+                </span>
+                <span className="shrink-0">Σ {signed(r.cumulativeNetUsd)}</span>
+              </div>
+
+              <div className="truncate text-[10px] text-ink-faint" title={r.reason}>
+                {r.exitReason ? r.exitReason.replace(/_/g, " ").toLowerCase() : r.reason}
+              </div>
+            </button>
+            {expanded === r.id && <ChargeDetail row={r} />}
+          </div>
+        ))}
+      </div>
+
+      <div className="hidden overflow-x-auto lg:block">
         <table className="w-full text-[11px]">
           <thead>
             <tr className="border-y border-bg-border text-left text-[10px] uppercase tracking-wide text-ink-faint">

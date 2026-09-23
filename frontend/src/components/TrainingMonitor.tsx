@@ -211,9 +211,9 @@ export default function TrainingMonitor({ refreshKey = 0 }: { refreshKey?: numbe
                 <tr className="text-left text-[10px] uppercase tracking-wide text-ink-faint">
                   <th className="px-3 py-1 font-medium">Closed</th>
                   <th className="px-3 py-1 font-medium">Side</th>
-                  <th className="px-3 py-1 text-right font-medium">Mark in → out</th>
+                  <th className="hidden px-3 py-1 text-right font-medium sm:table-cell">Mark in → out</th>
                   <th className="px-3 py-1 text-right font-medium">Strategy</th>
-                  <th className="px-3 py-1 text-right font-medium">Charges</th>
+                  <th className="hidden px-3 py-1 text-right font-medium sm:table-cell">Charges</th>
                   <th className="px-3 py-1 text-right font-medium">Net</th>
                 </tr>
               </thead>
@@ -234,13 +234,13 @@ export default function TrainingMonitor({ refreshKey = 0 }: { refreshKey?: numbe
                       <span className={t.direction === "LONG" ? "text-bull" : "text-bear"}>{t.direction}</span>
                       <span className="ml-1 text-ink-faint">{t.asset.replace("USDT", "")}</span>
                     </td>
-                    <td className="px-3 py-1 text-right font-mono text-ink-muted">
+                    <td className="hidden px-3 py-1 text-right font-mono text-ink-muted sm:table-cell">
                       {t.entryPrice.toFixed(2)} → {t.exitPrice?.toFixed(2) ?? "—"}
                     </td>
                     <td className={clsx("px-3 py-1 text-right font-mono", tone(t.grossPnlUsd))}>
                       {signed(t.grossPnlUsd)}
                     </td>
-                    <td className="px-3 py-1 text-right font-mono text-warn">-{usd(t.chargesUsd, 4)}</td>
+                    <td className="hidden px-3 py-1 text-right font-mono text-warn sm:table-cell">-{usd(t.chargesUsd, 4)}</td>
                     <td className={clsx("px-3 py-1 text-right font-mono font-semibold", tone(t.netPnlUsd))}>
                       {signed(t.netPnlUsd)}
                     </td>

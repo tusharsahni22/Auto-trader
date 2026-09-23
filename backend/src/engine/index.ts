@@ -1036,6 +1036,39 @@ export function pauseEngineForShutdown() {
   void releaseEngineLease().catch((error) => console.error("[engine] lease release failed:", error));
 }
 
+/**
+ * Reasons the engine must not be switched off right now.
+ *
+ * Stopping the engine halts new entries; it does not walk away from what is already
+ * open, so this is a guard against doing it BLIND rather than a hard safety
+ * requirement. Three things count as "still ongoing":
+ *   - a trade the engine holds open,
+ *   - a trade whose exchange close failed (closed locally, still live on Delta),
+ *   - a Delta position no local trade owns (nothing is managing its stop).
+ * The last two matter most: they are exactly the positions a stopped, unattended
+ * engine would leave exposed.
+ */
+export interface StopBlocker {
+  kind: "OPEN_TRADE" | "CLOSE_FAILED" | "UNMANAGED_POSITION";
+  detail: string;
+}
+
+export function getStopBlockers(): StopBlocker[] {
+  const blockers: StopBlocker[] = [];
+  for (const t of getTrades()) {
+    const asset = t.asset.replace("USDT", "");
+    if (t.status === "OPEN") {
+      blockers.push({ kind: "OPEN_TRADE", detail: `${t.direction} ${asset} is open` });
+    } else if (t.execution?.venue === "DELTA" && t.execution.status === "CLOSE_FAILED") {
+      blockers.push({ kind: "CLOSE_FAILED", detail: `${asset} shows closed here but its close failed on Delta` });
+    }
+  }
+  for (const p of unmanagedPositions) {
+    blockers.push({ kind: "UNMANAGED_POSITION", detail: `${p.symbol} ×${p.size} is open on Delta with no trade managing it` });
+  }
+  return blockers;
+}
+
 export function stopEngine() {
   state.running = false;
   state.startedAt = null;

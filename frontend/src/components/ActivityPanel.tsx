@@ -139,10 +139,10 @@ function Row({ row, view, depth = 0 }: { row: ActivityRow; view: View; depth?: n
         </td>
         <td className="px-2 py-1.5 text-right font-mono text-ink">{row.opportunities}</td>
         <td className="px-2 py-1.5 text-right font-mono text-bull">{row.open}</td>
-        <td className="px-2 py-1.5 text-right font-mono text-warn">{row.watch}</td>
+        <td className="hidden px-2 py-1.5 text-right font-mono text-warn sm:table-cell">{row.watch}</td>
         <td className="px-2 py-1.5 text-right font-mono text-bear">{row.veto}</td>
-        <td className="px-2 py-1.5 text-right font-mono text-ink">{row.tradesOpened}</td>
-        <td className="px-2 py-1.5 text-right font-mono text-ink-muted">
+        <td className="hidden px-2 py-1.5 text-right font-mono text-ink sm:table-cell">{row.tradesOpened}</td>
+        <td className="hidden px-2 py-1.5 text-right font-mono text-ink-muted sm:table-cell">
           {row.wins}W / {row.losses}L
         </td>
         <td className={"px-3 py-1.5 text-right font-mono " + pnlTone}>{row.tradesClosed > 0 ? usd(row.pnlUsd) : "—"}</td>
@@ -237,10 +237,10 @@ export default function ActivityPanel({ active }: { active: boolean }) {
               <th className="px-3 py-1.5 text-left font-medium">{view === "day" ? "Day" : view === "week" ? "Week" : "Month"}</th>
               <th className="px-2 py-1.5 text-right font-medium" title="Setups the engine found">Setups</th>
               <th className="px-2 py-1.5 text-right font-medium" title="Passed every check and taken">Taken</th>
-              <th className="px-2 py-1.5 text-right font-medium" title="Interesting but conflicting signals">Watch</th>
+              <th className="hidden px-2 py-1.5 text-right font-medium sm:table-cell" title="Interesting but conflicting signals">Watch</th>
               <th className="px-2 py-1.5 text-right font-medium" title="Blocked by a safety check">Vetoed</th>
-              <th className="px-2 py-1.5 text-right font-medium" title="Trades opened in the period">Trades</th>
-              <th className="px-2 py-1.5 text-right font-medium">Result</th>
+              <th className="hidden px-2 py-1.5 text-right font-medium sm:table-cell" title="Trades opened in the period">Trades</th>
+              <th className="hidden px-2 py-1.5 text-right font-medium sm:table-cell">Result</th>
               <th className="px-3 py-1.5 text-right font-medium">P&amp;L</th>
             </tr>
           </thead>
@@ -250,10 +250,10 @@ export default function ActivityPanel({ active }: { active: boolean }) {
                 <td className="px-3 py-1.5 text-ink">All ({data.days.length} days)</td>
                 <td className="px-2 py-1.5 text-right font-mono text-ink">{total.opportunities}</td>
                 <td className="px-2 py-1.5 text-right font-mono text-bull">{total.open}</td>
-                <td className="px-2 py-1.5 text-right font-mono text-warn">{total.watch}</td>
+                <td className="hidden px-2 py-1.5 text-right font-mono text-warn sm:table-cell">{total.watch}</td>
                 <td className="px-2 py-1.5 text-right font-mono text-bear">{total.veto}</td>
-                <td className="px-2 py-1.5 text-right font-mono text-ink">{total.tradesOpened}</td>
-                <td className="px-2 py-1.5 text-right font-mono text-ink-muted">{total.wins}W / {total.losses}L</td>
+                <td className="hidden px-2 py-1.5 text-right font-mono text-ink sm:table-cell">{total.tradesOpened}</td>
+                <td className="hidden px-2 py-1.5 text-right font-mono text-ink-muted sm:table-cell">{total.wins}W / {total.losses}L</td>
                 <td className={"px-3 py-1.5 text-right font-mono " + (total.pnlUsd >= 0 ? "text-bull" : "text-bear")}>{total.tradesClosed > 0 ? usd(total.pnlUsd) : "—"}</td>
               </tr>
             )}

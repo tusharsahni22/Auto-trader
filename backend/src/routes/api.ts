@@ -2,7 +2,7 @@ import { Router } from "express";
 import { getCandles, getFundingRate } from "../marketData.js";
 import { closeTradeManually, forceOpenTrade, getAssets, getBalanceInfo, getEngineState, getEquityCurve, getInterval, getLastScans, getOpenPositions, getRecentOpportunities, getShadowSummary, getSharedEngineState, reconcileDeltaPositions, startEngine, stopEngine, syncEngineFromLedger, updateTradeStop } from "../engine/index.js";
 import { getEngineRole, getLedgerHealth, getTrades, refreshLedger } from "../db.js";
-import { getUnmanagedPositions, isEquityStale } from "../engine/index.js";
+import { getStopBlockers, getUnmanagedPositions, isEquityStale } from "../engine/index.js";
 import { getLiveTradingStatus, isStrictLiveOnly } from "../services/execution.js";
 import { exchangeHealth } from "../services/exchangeHealth.js";
 import { classifyRegime } from "../decision/regime.js";
@@ -56,6 +56,8 @@ api.get("/status", async (_req, res) => {
     // than only in the server log, where it went unnoticed for days.
     exchange: exchangeHealth(),
     equityStale: isEquityStale(),
+    // Why the Stop button is locked. Computed here so every dashboard tab agrees.
+    stopBlockers: getStopBlockers(),
     unmanagedPositions: getUnmanagedPositions(),
     ledger: await getLedgerHealth(),
   });
@@ -71,11 +73,26 @@ api.post("/engine/start", async (_req, res) => {
   res.json({ ok: true, engine: getEngineState() });
 });
 
-api.post("/engine/stop", (_req, res) => {
+api.post("/engine/stop", (req, res) => {
   if (!getEngineRole().isLeader) {
     res.status(409).json({ ok: false, error: `Engine is controlled by the leader instance (${getEngineRole().leaderId})` });
     return;
   }
+  // The dashboard disables the button in this state, but a disabled button is only
+  // courtesy: a second tab, a stale page or a script can still send this request.
+  // `force: true` is deliberately API-only — an emergency stop must never become
+  // impossible, but it should never be one accidental click either.
+  const blockers = getStopBlockers();
+  if (blockers.length > 0 && req.body?.force !== true) {
+    res.status(409).json({
+      ok: false,
+      code: "TRADES_OPEN",
+      error: `Cannot stop the engine while trades are ongoing: ${blockers.map((b) => b.detail).join("; ")}. Close them first.`,
+      blockers,
+    });
+    return;
+  }
+  if (blockers.length > 0) console.warn(`[engine] FORCED stop with ${blockers.length} ongoing item(s): ${blockers.map((b) => b.detail).join("; ")}`);
   stopEngine();
   res.json({ ok: true, engine: getEngineState() });
 });

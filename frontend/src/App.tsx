@@ -10,6 +10,7 @@ import {
   type EngineRole,
   type LedgerHealth,
   type LiveTradingStatus,
+  type StopBlocker,
 } from "./lib/api";
 import { useSocket } from "./lib/useSocket";
 import { bollingerOverlays, breakoutOverlay, emaOverlay, smaOverlay } from "./lib/indicators";
@@ -82,6 +83,7 @@ export default function App() {
   const [showTools, setShowTools] = useState(false);
   const [live, setLive] = useState<LiveTradingStatus | undefined>();
   const [ledger, setLedger] = useState<LedgerHealth | undefined>();
+  const [serverBlockers, setServerBlockers] = useState<StopBlocker[]>([]);
   /** Bumped when a trade opens or closes so the analytics panels refetch at once. */
   const [analyticsKey, setAnalyticsKey] = useState(0);
   // Remembered so the choice survives a reload.
@@ -119,6 +121,7 @@ export default function App() {
       setEngineRole(s.role);
       setLive(s.live);
       setLedger(s.ledger);
+      setServerBlockers(s.stopBlockers ?? []);
       const byAsset: Record<string, ScanInfo> = {};
       for (const s2 of s.scans ?? []) byAsset[s2.asset] = s2;
       setScans(byAsset);
@@ -134,6 +137,7 @@ export default function App() {
         setEngineRole(s.role);
         setLive(s.live);
         setLedger(s.ledger);
+        setServerBlockers(s.stopBlockers ?? []);
       }).catch(() => {});
       refreshTrades();
       api.equityCurve().then(setEquityCurve).catch(() => {});
@@ -348,6 +352,20 @@ export default function App() {
 
   const activeTrade = selectedTrade ?? trades.find((t) => t.status === "OPEN") ?? null;
 
+  // Open trades come from the live trade list, so the lock engages the instant a trade
+  // opens and releases the instant it closes, rather than on the next status poll. The
+  // other two kinds (a failed exchange close, a Delta position nothing manages) exist
+  // only server-side, so they are taken from /api/status.
+  const stopBlockers = useMemo<StopBlocker[]>(
+    () => [
+      ...trades
+        .filter((t) => t.status === "OPEN")
+        .map((t): StopBlocker => ({ kind: "OPEN_TRADE", detail: `${t.direction} ${t.asset.replace("USDT", "")} is open` })),
+      ...serverBlockers.filter((x) => x.kind !== "OPEN_TRADE"),
+    ],
+    [trades, serverBlockers]
+  );
+
   const bottomTabs: { id: BottomTab; label: string; count: number }[] = [
     { id: "orders", label: "Order history", count: trades.length },
     { id: "trades", label: "Trades", count: filteredTrades.length },
@@ -358,18 +376,18 @@ export default function App() {
   ];
 
   return (
-    <div className="mx-auto flex min-h-screen max-w-[1700px] flex-col gap-4 p-4">
-      <header className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-bg-border bg-bg-panel px-4 py-3">
-        <div className="flex flex-wrap items-center gap-4">
-          <div>
-            <h1 className="text-base font-semibold tracking-tight text-ink">
+    <div className="mx-auto flex w-full max-w-[1700px] flex-col gap-3 p-2 sm:gap-4 sm:p-4">
+      <header className="flex flex-col gap-3 rounded-lg border border-bg-border bg-bg-panel px-3 py-3 sm:flex-row sm:flex-wrap sm:items-start sm:justify-between sm:px-4">
+        <div className="flex items-center justify-between gap-3 sm:flex-wrap sm:justify-start sm:gap-4">
+          <div className="min-w-0">
+            <h1 className="truncate text-base font-semibold tracking-tight text-ink">
               Auto Trader <span className="text-accent">·</span> BTC / ETH
             </h1>
-            <p className="text-[11px] text-ink-faint">
+            <p className="hidden text-[11px] text-ink-faint sm:block">
               Archetype engine + EMA/RSI signal bot · Delta Exchange
             </p>
           </div>
-          <div className="flex items-center gap-1">
+          <div className="flex shrink-0 items-center gap-1">
             {ASSETS.map((a) => (
               <button
                 key={a}
@@ -384,7 +402,7 @@ export default function App() {
             ))}
           </div>
         </div>
-          <EngineControls engine={engine} asset={asset} role={engineRole} />
+        <EngineControls engine={engine} asset={asset} role={engineRole} live={live} stopBlockers={stopBlockers} />
       </header>
 
       <SystemStatus live={live} ledger={ledger} />
@@ -403,9 +421,9 @@ export default function App() {
 
       <StatCards engine={engine} trades={trades} balance={balance} />
 
-      <div className="grid grid-cols-1 gap-4 xl:grid-cols-4">
+      <div className="grid grid-cols-1 gap-3 sm:gap-4 xl:grid-cols-4">
         {/* Chart column */}
-        <div className="flex flex-col gap-3 xl:col-span-3">
+        <div className="flex min-w-0 flex-col gap-3 xl:col-span-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <LivePriceTicker price={lastPrice} asset={asset} />
             <RegimeBadge regime={regime} fundingRate={fundingRate} />
@@ -426,7 +444,7 @@ export default function App() {
             candleCount={candles.length}
           />
 
-          <div className="h-[460px] overflow-hidden rounded-lg border border-bg-border bg-bg-panel">
+          <div className="h-[300px] overflow-hidden rounded-lg border border-bg-border bg-bg-panel sm:h-[400px] lg:h-[460px]">
             {candles.length === 0 ? (
               <div className="flex h-full items-center justify-center text-sm text-ink-faint">
                 {candleSource === "unavailable" ? "Candle data unavailable" : "Loading candles…"}
@@ -473,45 +491,55 @@ export default function App() {
             </div>
           )}
 
-          <div className="flex flex-col gap-2">
+          {/* The two flexible boxes (this one and Opportunities) grow to absorb whatever
+              height the taller column has, so both columns end together. Their content is
+              pinned absolutely: otherwise a chart or scrolling list counts toward the
+              column's intrinsic height and the pair inflate each other without bound. */}
+          <div className="flex flex-col gap-2 xl:flex-1">
             <div className="section-label">Equity curve</div>
-            <div className="h-[200px] rounded-lg border border-bg-border bg-bg-panel">
-              <PnlChart points={equityCurve} timezone={timezone} />
+            <div className="relative h-[200px] rounded-lg border border-bg-border bg-bg-panel xl:h-auto xl:min-h-[200px] xl:flex-1">
+              <div className="absolute inset-0">
+                <PnlChart points={equityCurve} timezone={timezone} />
+              </div>
             </div>
           </div>
         </div>
 
         {/* Sidebar */}
-        <div className="flex flex-col gap-3">
+        <div className="flex min-w-0 flex-col gap-3">
           <div className="flex flex-col gap-2">
             <div className="section-label">Active trade</div>
-            <TradeDetail trade={activeTrade} />
+            {/* Capped so one trade with a long exit plan cannot make this column
+                taller than the chart and reintroduce a blank hole under it. */}
+            <div className="max-h-[560px] overflow-auto rounded-lg">
+              <TradeDetail trade={activeTrade} />
+            </div>
           </div>
 
           <BotControl bot={bot} stats={botStats} onChanged={refreshBot} />
 
           <EngineHeartbeat scan={scans[asset] ?? null} />
 
-          <div className="flex flex-col gap-2">
+          <div className="flex flex-col gap-2 xl:flex-1">
             <div className="flex items-center justify-between">
               <div className="section-label">Opportunities</div>
               <span className="text-[11px] text-ink-faint">{opportunities.length}</span>
             </div>
-            <div className="h-[260px]">
-              <OpportunityFeed opportunities={opportunities} />
+            <div className="relative h-[260px] xl:h-auto xl:min-h-[260px] xl:flex-1">
+              <div className="h-full xl:absolute xl:inset-0">
+                <OpportunityFeed opportunities={opportunities} />
+              </div>
             </div>
           </div>
-
-          {/* Headlines and the scheduled macro calendar answer different questions,
-              so they get their own panels rather than sharing a tab strip. */}
-          <NewsCalendar mode="news" hoursAhead={48} assets={[asset.replace("USDT", "")]} />
-          <NewsCalendar mode="calendar" hoursAhead={72} assets={[asset.replace("USDT", "")]} />
-
-          <div className="flex flex-col gap-2">
-            <div className="section-label">Filters</div>
-            <Filters value={filters} onChange={setFilters} />
-          </div>
         </div>
+      </div>
+
+      {/* Headlines and the scheduled macro calendar answer different questions, so they
+          are separate panels. They used to sit in the sidebar, which made it ~600px
+          taller than the chart column and left a blank hole under the equity curve. */}
+      <div className="grid grid-cols-1 gap-3 sm:gap-4 lg:grid-cols-2">
+        <NewsCalendar mode="news" hoursAhead={48} assets={[asset.replace("USDT", "")]} />
+        <NewsCalendar mode="calendar" hoursAhead={72} assets={[asset.replace("USDT", "")]} />
       </div>
 
       <AnalyticsProgress refreshKey={analyticsKey} />
@@ -519,13 +547,13 @@ export default function App() {
       {/* One tabbed strip instead of three stacked lists — the page ends at a
           predictable height regardless of how much history has accumulated. */}
       <div className="panel flex flex-col overflow-hidden">
-        <div className="flex items-center gap-1 border-b border-bg-border px-2 py-1.5">
+        <div className="flex items-center gap-1 overflow-x-auto border-b border-bg-border px-2 py-1.5">
           {bottomTabs.map((t) => (
             <button
               key={t.id}
               onClick={() => setBottomTab(t.id)}
               className={
-                "flex items-center gap-1.5 rounded px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wider transition " +
+                "flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded px-2.5 py-1.5 text-[11px] font-semibold uppercase tracking-wider transition sm:py-1 " +
                 (bottomTab === t.id
                   ? "border border-bg-border bg-bg-raised text-ink"
                   : "border border-transparent text-ink-faint hover:text-ink-muted")
@@ -537,16 +565,21 @@ export default function App() {
           ))}
         </div>
 
-        <div className="max-h-[520px] overflow-auto">
+        <div className="overflow-auto sm:max-h-[520px]">
           {bottomTab === "orders" && <OrderHistory refreshKey={analyticsKey} />}
           {bottomTab === "training" && <TrainingMonitor refreshKey={analyticsKey} />}
           {bottomTab === "trades" && (
-            <TradeList trades={filteredTrades} onSelect={setSelectedTrade} selectedId={selectedTrade?.id} />
+            <>
+              <div className="border-b border-bg-border px-3 py-2">
+                <Filters value={filters} onChange={setFilters} />
+              </div>
+              <TradeList trades={filteredTrades} onSelect={setSelectedTrade} selectedId={selectedTrade?.id} />
+            </>
           )}
           {bottomTab === "bot" && <BotDecisionLog decisions={botDecisions} />}
           {bottomTab === "activity" && <ActivityPanel active={bottomTab === "activity"} />}
           {bottomTab === "research" && (
-            <iframe title="Strategy research dashboard" src="/api/research/dashboard" className="h-[820px] w-full border-0" />
+            <iframe title="Strategy research dashboard" src="/api/research/dashboard" className="h-[600px] w-full border-0 sm:h-[820px]" />
           )}
         </div>
       </div>

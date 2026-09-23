@@ -146,6 +146,12 @@ export interface LiveTradingStatus {
   note: string;
 }
 
+/** Something ongoing that makes switching the engine off unsafe. */
+export interface StopBlocker {
+  kind: "OPEN_TRADE" | "CLOSE_FAILED" | "UNMANAGED_POSITION";
+  detail: string;
+}
+
 /** Ledger health. `pendingSync > 0` means rows exist here but not yet in MongoDB. */
 export interface LedgerHealth {
   trades: number;
@@ -364,6 +370,7 @@ export const api = {
         scans: ScanInfo[];
         live?: LiveTradingStatus;
         ledger?: LedgerHealth;
+        stopBlockers?: StopBlocker[];
       }>(r)
     ),
   analyticsSummary: () => fetch("/api/analytics/summary").then((r) => json<AnalyticsSummary>(r)),

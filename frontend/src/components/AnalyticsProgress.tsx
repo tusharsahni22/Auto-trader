@@ -157,8 +157,9 @@ export default function AnalyticsProgress({ refreshKey = 0 }: { refreshKey?: num
       </div>
 
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
-        <div className="panel p-3">
+        <div className="panel flex flex-col p-3">
           <div className="mb-3 text-xs font-semibold uppercase tracking-wide text-ink-faint">Decision mix</div>
+          <div className="my-auto">
           {mix ? (
             <Donut
               centre={String(mix.totals.scans)}
@@ -173,10 +174,12 @@ export default function AnalyticsProgress({ refreshKey = 0 }: { refreshKey?: num
           ) : (
             <p className="py-6 text-xs text-ink-faint">Loading…</p>
           )}
+          </div>
         </div>
 
-        <div className="panel p-3">
+        <div className="panel flex flex-col p-3">
           <div className="mb-3 text-xs font-semibold uppercase tracking-wide text-ink-faint">Win / loss</div>
+          <div className="my-auto">
           {p ? (
             <Donut
               centre={`${(p.winRate * 100).toFixed(0)}%`}
@@ -193,6 +196,7 @@ export default function AnalyticsProgress({ refreshKey = 0 }: { refreshKey?: num
           ) : (
             <p className="py-6 text-xs text-ink-faint">Loading…</p>
           )}
+          </div>
         </div>
 
         <div className="panel p-3">
