@@ -2,7 +2,7 @@ import { Router } from "express";
 import { getCandles, getFundingRate } from "../marketData.js";
 import { closeTradeManually, forceOpenTrade, getAssets, getBalanceInfo, getEngineState, getEquityCurve, getInterval, getLastScans, getOpenPositions, getRecentOpportunities, getShadowSummary, getSharedEngineState, reconcileDeltaPositions, startEngine, stopEngine, syncEngineFromLedger, updateTradeStop } from "../engine/index.js";
 import { getEngineRole, getLedgerHealth, getTrades, refreshLedger } from "../db.js";
-import { isEquityStale } from "../engine/index.js";
+import { getUnmanagedPositions, isEquityStale } from "../engine/index.js";
 import { getLiveTradingStatus, isStrictLiveOnly } from "../services/execution.js";
 import { exchangeHealth } from "../services/exchangeHealth.js";
 import { classifyRegime } from "../decision/regime.js";
@@ -56,6 +56,7 @@ api.get("/status", async (_req, res) => {
     // than only in the server log, where it went unnoticed for days.
     exchange: exchangeHealth(),
     equityStale: isEquityStale(),
+    unmanagedPositions: getUnmanagedPositions(),
     ledger: await getLedgerHealth(),
   });
 });

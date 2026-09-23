@@ -120,6 +120,22 @@ let state: EngineState = {
 
 let reconciliationRunning = false;
 
+/**
+ * Positions that exist on Delta with no local trade backing them.
+ *
+ * The reconciler walks LOCAL trades and checks each against the exchange, so a
+ * position the ledger has never heard of was invisible: nothing managed it, no
+ * stop was placed for it, and it did not appear anywhere in the UI. They arise
+ * when an order fills after the engine gave up on it, or when a second instance
+ * trades the same account. They are reported, never auto-closed — the position
+ * may legitimately belong to another instance, and closing it blind would be
+ * exactly the kind of unasked-for trade this system must not make.
+ */
+let unmanagedPositions: { symbol: string; size: number; entryPrice: number; seenAt: number }[] = [];
+export function getUnmanagedPositions() {
+  return unmanagedPositions;
+}
+
 let equityPeak = Number(getKv("equityPeak") ?? state.equity);
 let dayStartEquity = Number(getKv("dayStartEquity") ?? state.equity);
 let dayStartDate = getKv("dayStartDate") ?? new Date().toISOString().slice(0, 10);
@@ -870,6 +886,27 @@ export async function reconcileDeltaPositions() {
       } else {
         trade.execution = { ...trade.execution, status: "CLOSED", closedAt: Date.now() };
         upsertTrade(trade);
+      }
+    }
+    // Anything on the exchange that no local trade accounts for.
+    const managed = new Set<string>();
+    for (const t of getTrades()) {
+      if (t.status === "OPEN" && t.execution?.venue === "DELTA") managed.add(t.asset.replace(/USDT$/, "USD"));
+    }
+    const found: typeof unmanagedPositions = [];
+    for (const p of positions as any[]) {
+      const size = Math.abs(Number(p.size ?? p.position_size ?? 0));
+      const symbol = String(p.product_symbol ?? p.symbol ?? "");
+      if (size > 0 && symbol && !managed.has(symbol)) {
+        found.push({ symbol, size, entryPrice: Number(p.entry_price ?? 0), seenAt: Date.now() });
+      }
+    }
+    const changed = found.length !== unmanagedPositions.length ||
+      found.some((x, i) => x.symbol !== unmanagedPositions[i]?.symbol || x.size !== unmanagedPositions[i]?.size);
+    unmanagedPositions = found;
+    if (found.length && changed) {
+      for (const p of found) {
+        console.error(`[reconcile] UNMANAGED position on Delta: ${p.symbol} size ${p.size} @ ${p.entryPrice} — no local trade owns it, so nothing is placing a stop for it. Close it on Delta or restart the instance that opened it.`);
       }
     }
   } catch (error: any) {

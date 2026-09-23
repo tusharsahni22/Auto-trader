@@ -84,6 +84,19 @@ function advice(fault: ExchangeFault, clientIp: string | null): string {
   }
 }
 
+/**
+ * Only endpoints we must be able to reach in order to trade safely count towards
+ * health. Delta's ticker endpoint returning 500 says nothing about whether an
+ * order would be accepted — and letting it mark the connection unhealthy would
+ * halt trading over a cosmetic price feed that the engine does not even rely on
+ * (prices come from the Binance stream).
+ */
+const CRITICAL = ["/v2/orders", "/v2/positions", "/v2/wallet", "/v2/fills"];
+
+export function isCriticalPath(path: string): boolean {
+  return CRITICAL.some((p) => path.startsWith(p));
+}
+
 export function recordSuccess(): void {
   const wasUnhealthy = !state.healthy;
   state.healthy = true;
@@ -95,7 +108,7 @@ export function recordSuccess(): void {
   if (wasUnhealthy) console.log("[exchange] Delta connection is healthy again");
 }
 
-export function recordFailure(error: unknown): ExchangeFault {
+export function recordFailure(error: unknown, critical = true): ExchangeFault {
   const { fault, clientIp } = classifyDeltaError(error);
   const message = error instanceof Error ? error.message : String(error);
 
@@ -113,22 +126,30 @@ export function recordFailure(error: unknown): ExchangeFault {
     state.message = message;
   }
 
-  // A transient blip should not stop trading, but an auth fault is not a blip:
-  // every subsequent call will fail the same way until a human intervenes.
+  // An auth fault is never a blip — every subsequent call fails the same way
+  // until a human intervenes — so it downs the connection from the first
+  // occurrence, whatever endpoint reported it. A non-auth error only counts
+  // when it came from an endpoint trading actually depends on.
   if (FATAL.includes(fault)) {
     if (state.healthy) console.error(`[exchange] FATAL: ${advice(fault, clientIp)}`);
     state.healthy = false;
-  } else if (state.consecutiveFailures >= 3) {
+  } else if (critical && state.consecutiveFailures >= 3) {
     state.healthy = false;
   }
   return fault;
 }
 
 export function exchangeHealth() {
+  // While the connection is healthy, report no fault: the last error may well be
+  // a non-critical endpoint misbehaving, and showing it beside "healthy" reads as
+  // a contradiction. It stays available as lastNonCriticalError for diagnostics.
+  const fault = state.healthy ? null : state.fault;
   return {
     ...state,
-    fatal: state.fault !== null && FATAL.includes(state.fault),
-    advice: state.fault ? advice(state.fault, state.clientIp) : null,
+    fault,
+    lastNonCriticalError: state.healthy ? state.message : null,
+    fatal: fault !== null && FATAL.includes(fault),
+    advice: fault ? advice(fault, state.clientIp) : null,
     staleForMs: state.lastSuccessAt ? Date.now() - state.lastSuccessAt : null,
   };
 }

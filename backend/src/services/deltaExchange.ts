@@ -4,7 +4,7 @@
  */
 
 import crypto from 'crypto';
-import { recordFailure, recordSuccess } from './exchangeHealth.js';
+import { isCriticalPath, recordFailure, recordSuccess } from './exchangeHealth.js';
 
 const API_KEY = process.env.DELTA_EXCHANGE_API_KEY || '';
 const API_SECRET = process.env.DELTA_EXCHANGE_API_SECRET || '';
@@ -63,7 +63,7 @@ async function deltaRequest(
     response = await fetch(BASE_URL + path, options);
   } catch (networkError) {
     // Connection-level failure: the exchange is unreachable, not merely unhappy.
-    recordFailure(networkError);
+    recordFailure(networkError, isCriticalPath(path));
     throw networkError;
   }
 
@@ -79,11 +79,13 @@ async function deltaRequest(
     // IP rejection, the client IP that has to be allowlisted.
     const detail = payload ? ` ${JSON.stringify(payload.error ?? payload)}` : '';
     const failure = new Error(`Delta Exchange API error (${response.status}) ${method} ${path}: ${reason}${detail}`);
-    recordFailure(failure);
+    recordFailure(failure, isCriticalPath(path));
     throw failure;
   }
 
-  recordSuccess();
+  // Only a critical endpoint succeeding proves we can still trade; a ticker
+  // responding says nothing about whether an order would be accepted.
+  if (isCriticalPath(path)) recordSuccess();
   return response.json();
 }
 
