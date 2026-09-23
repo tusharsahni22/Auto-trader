@@ -283,7 +283,8 @@ export async function getDeltaTicker(symbol: string): Promise<any> {
       throw e;
     }
   } catch (error: any) {
-    console.error('[deltaExchange] Failed to get ticker:', error);
+    // Testnet APIs are extremely flaky and randomly return 500s. We catch this upstream and backoff,
+    // so we don't need to spam the logs with it.
     throw error;
   }
 }
