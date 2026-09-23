@@ -23,6 +23,7 @@ services:
       PORT: 4000
       # Must match the named volume below, not the host layout.
       DATA_DIR: /app/data
+
     volumes:
       - trader_data:/app/data
     healthcheck:
@@ -48,3 +49,4 @@ services:
 
 volumes:
   trader_data:
+
