@@ -9,6 +9,7 @@ import { atr as _computeAtr } from "../lib/indicators.js";
 import type { ArchetypeCandidate } from "../decision/types.js";
 import { applyExchangeClose, finalizeClose, manageTrade } from "../lifecycle/manager.js";
 import { attachCharges } from "../services/tradeCharges.js";
+import { preTradeExchangeCheck } from "../services/execution.js";
 import { onTradeClosed } from "../learning/recalibrate.js";
 import { openShadow, updateShadows, getShadowSummary } from "../learning/shadow.js";
 import { checkEntryLiquidity, liquidityGateMode } from "../services/liquidity.js";
@@ -188,6 +189,46 @@ function loadOpenTradesFromDb() {
     if (t.status === "OPEN") openTrades.set(t.id, t);
   }
   state.openPositions = openTrades.size;
+}
+
+/**
+ * Pull the true balance from Delta and make it the engine's equity.
+ *
+ * `fallbackDelta` is only applied when the exchange has no answer for us — no
+ * credentials, or the connection is down. In that case the number is explicitly
+ * an estimate, and `equityIsStale` says so rather than letting it pass for real.
+ */
+let equityIsStale = false;
+export function isEquityStale() {
+  return equityIsStale;
+}
+
+async function resyncEquityFromExchange(fallbackDelta = 0): Promise<void> {
+  if (!deltaConfigured()) {
+    state.equity += fallbackDelta;
+    persistEquity(fallbackDelta);
+    broadcast("equity", { time: Date.now(), equity: state.equity });
+    return;
+  }
+  try {
+    // Force a fresh read: the 30s cache is fine for display but not for the
+    // number the engine sizes its next position from.
+    lastBalanceFetch = 0;
+    const balance = await fetchDeltaBalance();
+    const drift = balance.equity - state.equity;
+    state.equity = balance.equity;
+    equityIsStale = false;
+    persistEquity(fallbackDelta);
+    if (Math.abs(drift) > 0.01) {
+      console.log(`[engine] equity resynced from Delta: ${balance.equity.toFixed(4)} (local estimate was off by ${drift.toFixed(4)})`);
+    }
+  } catch (error: any) {
+    equityIsStale = true;
+    state.equity += fallbackDelta;
+    persistEquity(fallbackDelta);
+    console.error(`[engine] equity NOT synced — Delta unreachable (${error?.message ?? error}); showing an estimate`);
+  }
+  broadcast("equity", { time: Date.now(), equity: state.equity });
 }
 
 function persistEquity(realizedPnl: number) {
@@ -447,6 +488,16 @@ async function evaluateAndMaybeOpen(asset: Asset) {
     return;
   }
   if (!out.candidate || !out.sizing) return;
+
+  // Strict live-only: check the exchange BEFORE a local trade exists. Opening
+  // first and unwinding afterwards briefly books risk, equity and an open
+  // position for something Delta never accepted.
+  const exchangeOk = preTradeExchangeCheck();
+  if (!exchangeOk.ok) {
+    console.error(`[engine] NOT opening ${asset} ${out.candidate.direction}: ${exchangeOk.reason}`);
+    logOpportunity(asset, "VETO", { ...out, vetoReasons: [...(out.vetoReasons ?? []), "EXCHANGE_UNAVAILABLE"] } as typeof out);
+    return;
+  }
   openTrade(asset, buildTradeFromOpportunity(asset, out));
 }
 
@@ -501,6 +552,8 @@ export function forceOpenTrade(asset: Asset, direction: Direction = "LONG"): { o
   }
 
   const trade = buildTradeFromOpportunity(asset, out, candidate.structuralReason);
+  const exchangeReady = preTradeExchangeCheck();
+  if (!exchangeReady.ok) return { ok: false, error: `Exchange unavailable: ${exchangeReady.reason}` };
   openTrade(asset, trade);
   logOpportunity(asset, "OPEN", out);
   return { ok: true, trade };
@@ -597,6 +650,8 @@ export function openManualTrade(params: {
     maxHoldHours: 48,
   };
 
+  const exchangeReady = preTradeExchangeCheck();
+  if (!exchangeReady.ok) return { ok: false, error: `Exchange unavailable: ${exchangeReady.reason}` };
   openTrade(asset, trade);
   return { ok: true, trade };
 }
@@ -720,11 +775,7 @@ function persistTradeClose(trade: Trade, after?: Promise<void>) {
         // The exchange has now reported the real fill and commission, so the estimate
         // credited to equity below is replaced by the actual figure.
         const after = attachCharges(updatedTrade).netPnlUsd;
-        if (after !== before) {
-          state.equity += after - before;
-          persistEquity(after - before);
-          broadcast("equity", { time: Date.now(), equity: state.equity });
-        }
+        if (after !== before) void resyncEquityFromExchange(after - before);
       }
       upsertTrade(updatedTrade);
       broadcast("trade_updated", updatedTrade);
@@ -738,8 +789,12 @@ function persistTradeClose(trade: Trade, after?: Promise<void>) {
   // has always been trained on gross outcomes.
   const charges = attachCharges(trade);
   upsertTrade(trade);
-  state.equity += charges.netPnlUsd;
-  persistEquity(charges.netPnlUsd);
+  // Delta is the authority on equity. Adding local P&L here is what made the
+  // dashboard drift away from the real balance: the local sum omits funding,
+  // exact commissions and anything done outside this engine, so the two numbers
+  // diverged a little more with every close. Fall back to arithmetic only when
+  // there is no exchange to ask.
+  void resyncEquityFromExchange(charges.netPnlUsd);
   onTradeClosed(trade);
   broadcast("trade_closed", trade);
   broadcast("equity", { time: Date.now(), equity: state.equity });
@@ -860,6 +915,12 @@ export async function initEngine() {
   await startMarketData(ASSETS, [INTERVAL]);
   void reconcileDeltaPositions();
   setInterval(() => void reconcileDeltaPositions(), 10_000);
+  // Without this the balance only refreshed when the dashboard happened to call
+  // /api/balance, so a headless server drifted indefinitely.
+  if (deltaConfigured()) {
+    void resyncEquityFromExchange();
+    setInterval(() => void resyncEquityFromExchange(), 30_000);
+  }
   onPrice((asset) => {
     const currentPrice = getLastPrice(asset);
     if (currentPrice === null || currentPrice <= 0) return;

@@ -8,6 +8,7 @@ import { initEngine, reloadPersistedState, pauseEngineForShutdown, resumeEngineI
 import { initializeLedger } from "./db.js";
 import { startNewsCalendarUpdates, setNewsCalendarBroadcaster } from "./services/newsCalendar.js";
 import { startRateRefresh } from "./services/rates.js";
+import { preflight } from "./services/exchangeHealth.js";
 import { setBotBroadcaster } from "./bot/scheduler.js";
 import { getMarketFeedHealth } from "./marketData.js";
 
@@ -105,6 +106,17 @@ server.listen(PORT, async () => {
       reloadPersistedState();
     } catch (error) {
       console.error("[server] MongoDB connection failed, continuing without persistence:", error);
+    }
+  }
+
+  // Prove the exchange accepts an authenticated request before any signal can
+  // fire. An IP allowlist that no longer contains this host is the usual cause,
+  // and it is invisible until an order silently fails — so it is checked here
+  // and reported with the exact IP Delta rejected.
+  if (process.env.DELTA_EXCHANGE_API_KEY && process.env.DELTA_EXCHANGE_API_SECRET) {
+    const health = await preflight();
+    if (!health.healthy && process.env.LIVE_TRADING === "true") {
+      console.error("[server] LIVE_TRADING is on but Delta is not usable. No trades will be opened until this is fixed.");
     }
   }
 

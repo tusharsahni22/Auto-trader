@@ -2,7 +2,9 @@ import { Router } from "express";
 import { getCandles, getFundingRate } from "../marketData.js";
 import { closeTradeManually, forceOpenTrade, getAssets, getBalanceInfo, getEngineState, getEquityCurve, getInterval, getLastScans, getOpenPositions, getRecentOpportunities, getShadowSummary, getSharedEngineState, reconcileDeltaPositions, startEngine, stopEngine, syncEngineFromLedger, updateTradeStop } from "../engine/index.js";
 import { getEngineRole, getLedgerHealth, getTrades, refreshLedger } from "../db.js";
-import { getLiveTradingStatus } from "../services/execution.js";
+import { isEquityStale } from "../engine/index.js";
+import { getLiveTradingStatus, isStrictLiveOnly } from "../services/execution.js";
+import { exchangeHealth } from "../services/exchangeHealth.js";
 import { classifyRegime } from "../decision/regime.js";
 import { getAllCellStats, getPlattParams } from "../learning/stats.js";
 import { newsCalendarRouter } from "./newsCalendar.js";
@@ -49,7 +51,11 @@ api.get("/status", async (_req, res) => {
     scans: getLastScans(),
     // Surfaced so a silently failing exchange connection is visible on the dashboard
     // rather than only in the server log.
-    live: getLiveTradingStatus(),
+    live: { ...getLiveTradingStatus(), strictLiveOnly: isStrictLiveOnly() },
+    // Surfaced so an IP-allowlist rejection is visible on the dashboard rather
+    // than only in the server log, where it went unnoticed for days.
+    exchange: exchangeHealth(),
+    equityStale: isEquityStale(),
     ledger: await getLedgerHealth(),
   });
 });

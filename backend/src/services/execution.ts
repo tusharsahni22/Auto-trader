@@ -12,6 +12,7 @@
 
 import type { Trade } from "../types.js";
 import { getLastPrice } from "../marketData.js";
+import { exchangeHealth } from "./exchangeHealth.js";
 import { cancelBrackets, handleTargetReached, placeBrackets, syncBrackets } from "./brackets.js";
 import {
   closeDeltaPosition,
@@ -24,6 +25,36 @@ import {
 
 export function isLiveTradingEnabled(): boolean {
   return process.env.LIVE_TRADING === "true" && isDeltaExchangeEnabled();
+}
+
+/**
+ * Strict mode: never hold a position locally that the exchange does not have.
+ *
+ * Defaults ON whenever LIVE_TRADING is true, because a half-simulated book is
+ * worse than no trade at all — it reports P&L, risk and equity for a position
+ * that does not exist. Set REQUIRE_EXCHANGE_FILL=false for the old
+ * degrade-to-simulation behaviour.
+ */
+export function isStrictLiveOnly(): boolean {
+  const flag = process.env.REQUIRE_EXCHANGE_FILL;
+  if (flag !== undefined) return flag === "true";
+  return process.env.LIVE_TRADING === "true";
+}
+
+/**
+ * Asked BEFORE a local trade is created, so a trade that cannot reach the
+ * exchange is never opened rather than opened and then unwound.
+ */
+export function preTradeExchangeCheck(): { ok: boolean; reason?: string } {
+  if (!isStrictLiveOnly()) return { ok: true };
+  if (!isLiveTradingEnabled()) {
+    return { ok: false, reason: "LIVE_TRADING is off but REQUIRE_EXCHANGE_FILL demands a real exchange fill" };
+  }
+  const health = exchangeHealth();
+  if (!health.healthy) {
+    return { ok: false, reason: health.advice ?? health.message ?? "Delta connection is not healthy" };
+  }
+  return { ok: true };
 }
 
 /**
@@ -117,6 +148,17 @@ export async function toContracts(
  */
 export async function mirrorOpenToDelta(trade: Trade, onUpdate: ExecutionUpdate = () => {}): Promise<void> {
   if (!isLiveTradingEnabled()) {
+    if (isStrictLiveOnly()) {
+      // Fail closed: REJECTED makes the engine unwind the local trade rather than
+      // quietly running a simulated position alongside real ones.
+      trade.execution = {
+        venue: "DELTA",
+        status: "REJECTED",
+        error: "Strict live-only mode: refusing to open a simulated position while LIVE_TRADING is off",
+      };
+      onUpdate(trade);
+      return;
+    }
     trade.execution = { venue: "SIMULATED", status: "SIMULATED" };
     return;
   }
@@ -307,7 +349,13 @@ async function tryMirrorOpen(trade: Trade, onUpdate: ExecutionUpdate): Promise<v
  * to close, and sending a blind reduce order would open a position backwards.
  */
 export async function mirrorCloseToDelta(trade: Trade, onUpdate: ExecutionUpdate = () => {}): Promise<void> {
-  if (trade.execution?.venue !== "DELTA" || trade.execution.status !== "FILLED") return;
+  // Deliberately NOT gated on status === "FILLED". A trade whose close already
+  // failed sits in CLOSE_FAILED, and that is exactly the position still open on
+  // Delta that most needs closing — the old guard turned the reconciler's orphan
+  // recovery into a silent no-op, so a position could stay open on the exchange
+  // indefinitely while the dashboard showed it closed. tryMirrorClose reads the
+  // real position size before sending anything, so acting here is safe.
+  if (trade.execution?.venue !== "DELTA") return;
 
   const contracts = trade.execution.contracts;
   if (!contracts || contracts < 1) return;
