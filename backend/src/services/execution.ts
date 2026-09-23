@@ -327,9 +327,11 @@ async function tryMirrorClose(trade: Trade, onUpdate: ExecutionUpdate): Promise<
     // Close only what is really there: a plain close must never open a reverse position.
     let exchangeSize: number | null = null;
     try {
+      const { assetToProductId } = await import("./deltaExchange.js");
+      const productId = await assetToProductId(trade.asset);
       const symbol = trade.asset.replace(/USDT$/, "USD");
       const positions = await getDeltaPositions();
-      const match = positions.find((p: any) => String(p.product_symbol ?? p.symbol ?? "") === symbol);
+      const match = positions.find((p: any) => p.product_id === productId || String(p.product_symbol ?? p.symbol ?? "") === symbol);
       exchangeSize = match ? Math.abs(Number(match.size ?? match.position_size ?? 0)) : 0;
     } catch {
       /* cannot read positions: fall through and attempt the close */

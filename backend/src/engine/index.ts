@@ -366,6 +366,12 @@ function openTrade(asset: Asset, trade: Trade) {
   void (async () => {
     const { mirrorOpenToDelta } = await import("../services/execution.js");
     await mirrorOpenToDelta(trade, (updatedTrade) => {
+      if (updatedTrade.execution?.status === "REJECTED" || updatedTrade.execution?.status === "FAILED") {
+        updatedTrade.status = "CLOSED";
+        openTrades.delete(updatedTrade.id);
+        state.openPositions = [...openTrades.values()].filter(t => t.status === "OPEN").length;
+        console.warn(`[engine] Trade ${updatedTrade.id} failed to open on exchange, removed from local simulation.`);
+      }
       upsertTrade(updatedTrade);
       broadcast("trade_updated", updatedTrade);
     });
@@ -746,55 +752,70 @@ function persistTradeClose(trade: Trade, after?: Promise<void>) {
  */
 export async function reconcileDeltaPositions() {
   if (reconciliationRunning || !deltaConfigured()) return;
-  if (process.env.ENGINE_INSTANCE_ID !== (process.env.ENGINE_LEADER_ID ?? "domain")) return;
+  if (process.env.ENGINE_INSTANCE_ID !== (process.env.ENGINE_LEADER_ID ?? process.env.ENGINE_INSTANCE_ID ?? "domain")) return;
   reconciliationRunning = true;
   try {
-    const { getDeltaPositions } = await import("../services/deltaExchange.js");
+    const { getDeltaPositions, assetToProductId } = await import("../services/deltaExchange.js");
     const positions = await getDeltaPositions();
-    const live = new Map<string, number>();
-    for (const position of positions) {
-      const symbol = String(position.product_symbol ?? position.symbol ?? "");
-      const size = Math.abs(Number(position.size ?? position.position_size ?? 0));
-      if (symbol && Number.isFinite(size) && size > 0) live.set(symbol, size);
-    }
 
-    for (const trade of [...openTrades.values()]) {
-      if (trade.execution?.venue !== "DELTA" || trade.execution.status !== "FILLED") continue;
+    const liveDeltaTrades = getTrades().filter(t => 
+      t.execution?.venue === "DELTA" && 
+      (t.status === "OPEN" || (t.status === "CLOSED" && t.execution.status !== "CLOSED"))
+    );
+
+    for (const trade of liveDeltaTrades) {
+      if (trade.execution?.status !== "FILLED" && trade.execution?.status !== "CLOSE_FAILED") continue;
+      
+      const productId = await assetToProductId(trade.asset);
       const symbol = trade.asset.replace(/USDT$/, "USD");
-      const exchangeSize = live.get(symbol) ?? 0;
+      
+      const match = positions.find((p: any) => p.product_id === productId || String(p.product_symbol ?? p.symbol ?? "") === symbol);
+      const exchangeSize = match ? Math.abs(Number(match.size ?? match.position_size ?? 0)) : 0;
+
       if (exchangeSize > 0) {
-        // Still open on the exchange: make sure its stop is resting, and flatten it if it cannot be protected.
-        await verifyBrackets(trade, exchangeSize);
-        const bracket = trade.execution.bracket;
-        const failsafeMs = Number(process.env.BRACKET_FAILSAFE_SEC ?? 60) * 1000;
-        if (bracket?.status === "UNPROTECTED" && bracket.unprotectedSince && Date.now() - bracket.unprotectedSince > failsafeMs) {
-          console.error(`[reconcile] ${trade.asset} has been without an exchange stop for over ${failsafeMs / 1000}s — closing it (fail-safe)`);
-          closeTradeManually(trade.id, "PROTECTION_FAILSAFE");
+        if (trade.status === "CLOSED") {
+          console.warn(`[reconcile] Trade ${trade.id} on ${trade.asset} is locally closed but has ${exchangeSize} on exchange. Forcing close.`);
+          const { mirrorCloseToDelta } = await import("../services/execution.js");
+          await mirrorCloseToDelta(trade, () => {});
+        } else {
+          // Still open on the exchange: make sure its stop is resting, and flatten it if it cannot be protected.
+          await verifyBrackets(trade, exchangeSize);
+          const bracket = trade.execution?.bracket;
+          const failsafeMs = Number(process.env.BRACKET_FAILSAFE_SEC ?? 60) * 1000;
+          if (bracket?.status === "UNPROTECTED" && bracket.unprotectedSince && Date.now() - bracket.unprotectedSince > failsafeMs) {
+            console.error(`[reconcile] ${trade.asset} has been without an exchange stop for over ${failsafeMs / 1000}s — closing it (fail-safe)`);
+            closeTradeManually(trade.id, "PROTECTION_FAILSAFE");
+          }
         }
         continue;
       }
 
-      // Gone from the exchange: a bracket stop or target closed it. Recover the real exit from the order fills.
-      const exchangeExit = await findExchangeExit(trade);
-      const mark = getLastPrice(trade.asset) ?? trade.entryPrice;
-      finalizeClose(trade, exchangeExit?.price ?? mark, exchangeExit?.reason ?? "EXCHANGE_EXTERNAL_CLOSE", Date.now());
-      trade.execution = { ...trade.execution, status: "CLOSED", closedAt: Date.now() };
-      openTrades.delete(trade.id);
-      state.openPositions = openTrades.size;
-      upsertTrade(trade);
-      onTradeClosed(trade);
-      broadcast("trade_closed", trade);
-      
-      console.log(`[reconcile] marked ${trade.id} closed because Delta has no ${symbol} position`);
-      try {
-        const balance = await fetchDeltaBalance();
-        state.equity = balance.equity;
-        persistEquity(0);
-        console.log(`[reconcile] synced true equity from Delta: $${balance.equity}`);
-      } catch (e: any) {
-        console.error("[reconcile] failed to sync equity after external close", e?.message ?? e);
+      // Gone from the exchange: a bracket stop or target closed it, or it was successfully closed.
+      if (trade.status === "OPEN") {
+        const exchangeExit = await findExchangeExit(trade);
+        const mark = getLastPrice(trade.asset) ?? trade.entryPrice;
+        finalizeClose(trade, exchangeExit?.price ?? mark, exchangeExit?.reason ?? "EXCHANGE_EXTERNAL_CLOSE", Date.now());
+        trade.execution = { ...trade.execution, status: "CLOSED", closedAt: Date.now() };
+        openTrades.delete(trade.id);
+        state.openPositions = [...openTrades.values()].filter(t => t.status === "OPEN").length;
+        upsertTrade(trade);
+        onTradeClosed(trade);
+        broadcast("trade_closed", trade);
+        
+        console.log(`[reconcile] marked ${trade.id} closed because Delta has no ${symbol} position`);
+        try {
+          const balance = await fetchDeltaBalance();
+          state.equity = balance.equity;
+          persistEquity(0);
+          console.log(`[reconcile] synced true equity from Delta: $${balance.equity}`);
+        } catch (e: any) {
+          console.error("[reconcile] failed to sync equity after external close", e?.message ?? e);
+        }
+        broadcast("equity", { time: Date.now(), equity: state.equity });
+      } else {
+        trade.execution = { ...trade.execution, status: "CLOSED", closedAt: Date.now() };
+        upsertTrade(trade);
       }
-      broadcast("equity", { time: Date.now(), equity: state.equity });
     }
   } catch (error: any) {
     console.warn(`[reconcile] Delta position sync failed: ${error?.message ?? error}`);
