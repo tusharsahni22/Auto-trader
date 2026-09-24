@@ -527,7 +527,7 @@ export default function App() {
               <div className="section-label">Opportunities</div>
               <span className="text-[11px] text-ink-faint">{opportunities.length}</span>
             </div>
-            <div className="h-[530px]">
+            <div className="h-[530px] max-h-[530px] shrink-0 overflow-hidden">
               <OpportunityFeed opportunities={opportunities} />
             </div>
           </div>
