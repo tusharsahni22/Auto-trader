@@ -178,6 +178,21 @@ export async function refreshLedger() {
   applyStore(merged.store);
   const after = Object.keys(store.trades).length;
   if (after !== before) console.log(`[ledger] refresh: ${before} -> ${after} trades`);
+  try {
+    const current = await stateCollection().findOne({ _id: STATE_ID });
+    if (!current) return;
+    const before = Object.keys(store.trades).length;
+    const merged = mergeStores(store, {
+      trades: current.trades ?? {},
+      equityCurve: current.equityCurve ?? {},
+      kv: current.kv ?? {},
+    });
+    applyStore(merged.store);
+    const after = Object.keys(store.trades).length;
+    if (after !== before) console.log(`[ledger] refresh: ${before} -> ${after} trades`);
+  } catch (error) {
+    console.error("[ledger] refreshLedger failed:", error);
+  }
 }
 
 /** Only the configured leader may run the strategy against the shared account. */
@@ -192,11 +207,27 @@ export async function acquireEngineLease(): Promise<{ ok: boolean; owner?: strin
     { upsert: true, returnDocument: "after" }
   );
   return { ok: result?.kv?.leaseOwner === INSTANCE_ID, owner: result?.kv?.leaseOwner };
+  try {
+    const result = await stateCollection().findOneAndUpdate(
+      { _id: LEASE_ID, $or: [{ "kv.leaseExpiresAt": { $lt: now.toISOString() } }, { "kv.leaseOwner": INSTANCE_ID }, { "kv.leaseOwner": { $exists: false } }] },
+      { $set: { "kv.leaseOwner": INSTANCE_ID, "kv.leaseExpiresAt": expiresAt.toISOString() } },
+      { upsert: true, returnDocument: "after" }
+    );
+    return { ok: result?.kv?.leaseOwner === INSTANCE_ID, owner: result?.kv?.leaseOwner };
+  } catch (error) {
+    console.error("[ledger] acquireEngineLease failed:", error);
+    return { ok: false, owner: "unknown" };
+  }
 }
 
 export async function releaseEngineLease() {
   if (mongoReady && isMongoConnected() && INSTANCE_ID === LEADER_ID) {
     await stateCollection().updateOne({ _id: LEASE_ID, "kv.leaseOwner": INSTANCE_ID }, { $set: { "kv.leaseExpiresAt": new Date(0).toISOString() } });
+    try {
+      await stateCollection().updateOne({ _id: LEASE_ID, "kv.leaseOwner": INSTANCE_ID }, { $set: { "kv.leaseExpiresAt": new Date(0).toISOString() } });
+    } catch (error) {
+      console.error("[ledger] releaseEngineLease failed:", error);
+    }
   }
 }
 
@@ -208,6 +239,17 @@ async function persistMongo() {
     { upsert: true }
   );
   lastPersistError = null;
+  try {
+    await stateCollection().updateOne(
+      { _id: STATE_ID },
+      { $set: { trades: store.trades, equityCurve: store.equityCurve, kv: store.kv } },
+      { upsert: true }
+    );
+    lastPersistError = null;
+  } catch (error) {
+    console.error("[ledger] persistMongo failed:", error);
+    lastPersistError = String(error);
+  }
 }
 
 /**

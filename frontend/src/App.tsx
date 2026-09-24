@@ -527,7 +527,7 @@ export default function App() {
               <div className="section-label">Opportunities</div>
               <span className="text-[11px] text-ink-faint">{opportunities.length}</span>
             </div>
-            <div className="h-[260px]">
+            <div className="h-[530px]">
               <OpportunityFeed opportunities={opportunities} />
             </div>
           </div>
