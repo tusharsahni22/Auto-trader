@@ -522,12 +522,12 @@ export default function App() {
 
           <EngineHeartbeat scan={scans[asset] ?? null} />
 
-          <div className="flex flex-col gap-2 xl:flex-1">
+          <div className="flex flex-col gap-2">
             <div className="flex items-center justify-between">
               <div className="section-label">Opportunities</div>
               <span className="text-[11px] text-ink-faint">{opportunities.length}</span>
             </div>
-            <div className="h-[260px] xl:h-full xl:min-h-[260px]">
+            <div className="h-[260px]">
               <OpportunityFeed opportunities={opportunities} />
             </div>
           </div>
